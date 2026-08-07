@@ -63,14 +63,15 @@ def generate_pdf(expert_id, round_num, respostas, afirmacoes_dict):
 def init_db():
     conn = sqlite3.connect("delphi_data.db")
     conn.execute('CREATE TABLE IF NOT EXISTS respostas (expert_id TEXT, round_num INTEGER, statement_id INTEGER, score INTEGER, justification TEXT, PRIMARY KEY (expert_id, round_num, statement_id))')
-    conn.execute('CREATE TABLE IF NOT EXISTS afirmacoes (id INTEGER PRIMARY KEY AUTOINCREMENT, texto TEXT)')
+    # ID deixa de ser auto-increment para termos controlo exato (1 a 24)
+    conn.execute('CREATE TABLE IF NOT EXISTS afirmacoes (id INTEGER PRIMARY KEY, texto TEXT)')
     conn.execute('CREATE TABLE IF NOT EXISTS config (chave TEXT PRIMARY KEY, valor TEXT)')
     
     c = conn.cursor()
     c.execute('SELECT COUNT(*) FROM afirmacoes')
     if c.fetchone()[0] == 0:
-        for af in LISTA_24_AFIRMACOES:
-            c.execute('INSERT INTO afirmacoes (texto) VALUES (?)', (af,))
+        for idx, af in enumerate(LISTA_24_AFIRMACOES, 1):
+            c.execute('INSERT INTO afirmacoes (id, texto) VALUES (?, ?)', (idx, af))
             
     c.execute('SELECT COUNT(*) FROM config')
     if c.fetchone()[0] == 0:
@@ -92,7 +93,7 @@ def get_config():
 
 def get_afirmacoes():
     conn = sqlite3.connect("delphi_data.db")
-    df_af = pd.read_sql_query("SELECT * FROM afirmacoes", conn)
+    df_af = pd.read_sql_query("SELECT * FROM afirmacoes ORDER BY id", conn)
     conn.close()
     return dict(zip(df_af['id'], df_af['texto']))
 
@@ -151,7 +152,7 @@ else:
                     with st.form("r1"):
                         respostas = {}
                         for af_id, af_text in AFIRMACOES.items():
-                            st.markdown(f"**{af_text}**")
+                            st.markdown(f"**[{af_id}] {af_text}**")
                             s = st.radio(f"Nota para questão {af_id}", scale_options, key=f"s_{af_id}", horizontal=True)
                             j = st.text_area(f"Justificação {af_id}", key=f"j_{af_id}")
                             respostas[af_id] = {"score": s, "just": j, "obr": (s in mandatory_list)}
@@ -186,7 +187,7 @@ else:
                                 voto_ant = voto_ant[0] if len(voto_ant) > 0 else scale_min
                                 outros = ", ".join(map(str, df_r1[(df_r1['statement_id'] == idx) & (df_r1['expert_id'] != expert_id)]['score'].tolist()))
                                 
-                                st.markdown(f"### {af_text}")
+                                st.markdown(f"### [{idx}] {af_text}")
                                 st.markdown(f"👤 Seu voto R1: `{voto_ant}` | 👥 Outros: `{outros}`")
                                 
                                 try:
@@ -243,29 +244,34 @@ else:
         with tab2:
             st.subheader("Gerir Afirmações")
             
-            # Botão para carregar as 24 oficiais automaticamente
             if st.button("🔄 Carregar as 24 Afirmações Oficiais"):
                 conn.execute("DELETE FROM afirmacoes")
-                for af in LISTA_24_AFIRMACOES:
-                    conn.execute("INSERT INTO afirmacoes (texto) VALUES (?)", (af,))
+                for idx, af in enumerate(LISTA_24_AFIRMACOES, 1):
+                    conn.execute("INSERT INTO afirmacoes (id, texto) VALUES (?, ?)", (idx, af))
                 conn.commit()
-                st.success("As 24 afirmações oficiais foram carregadas com sucesso!")
+                st.success("As 24 afirmações oficiais foram carregadas de 1 a 24 com sucesso!")
                 st.rerun()
                 
             st.markdown("---")
-            nova_af = st.text_area("Adicionar Nova Afirmação Individual")
-            if st.button("Adicionar Afirmação"):
-                if nova_af.strip():
-                    conn.execute("INSERT INTO afirmacoes (texto) VALUES (?)", (nova_af,))
+            st.subheader("Adicionar Nova Afirmação com ID Específico")
+            col_id, col_txt = st.columns([1, 4])
+            with col_id:
+                novo_id = st.number_input("ID", min_value=1, value=1)
+            with col_txt:
+                novo_texto = st.text_input("Texto da Afirmação")
+                
+            if st.button("Adicionar / Substituir Afirmação"):
+                if novo_texto.strip():
+                    conn.execute("INSERT OR REPLACE INTO afirmacoes (id, texto) VALUES (?, ?)", (novo_id, novo_texto))
                     conn.commit()
-                    st.success("Afirmação adicionada com sucesso!")
+                    st.success(f"Afirmação com ID {novo_id} guardada com sucesso!")
                     st.rerun()
                 else:
                     st.error("O texto não pode estar vazio.")
                     
             st.markdown("---")
             st.subheader("Lista de Afirmações Atuais")
-            df_af_list = pd.read_sql_query("SELECT * FROM afirmacoes", conn)
+            df_af_list = pd.read_sql_query("SELECT * FROM afirmacoes ORDER BY id", conn)
             for _, row in df_af_list.iterrows():
                 col1, col2 = st.columns([8, 1])
                 with col1:
