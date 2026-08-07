@@ -3,7 +3,7 @@ import sqlite3
 import pandas as pd
 
 # Configuração da Página
-st.set_page_title(page_title="Painel Delphi - Enfermagem", layout="centered")
+st.set_page_config(page_title="Painel Delphi - Enfermagem", layout="centered")
 
 # --- BANCO DE DADOS SQLite ---
 def init_db():
@@ -53,7 +53,6 @@ if modo == "Participante (Perito)":
                 st.markdown(f"**{afirmacao}**")
                 score = st.radio(f"Concordância (Afirmação {i+1})", [1, 2, 3, 4, 5], horizontal=True, key=f"s_{i}")
                 
-                # Regra da justificação obrigatória para 1 ou 5
                 obrigatorio = (score == 1 or score == 5)
                 label_just = "Justificação (Obrigatória por ter votado nos extremos):" if obrigatorio else "Justificação (Opcional):"
                 just = st.text_area(label_just, key=f"j_{i}")
@@ -64,7 +63,6 @@ if modo == "Participante (Perito)":
             submitted = st.form_submit_button("Submeter Respostas da Ronda 1")
             
             if submitted:
-                # Validar se preencheu as justificações obrigatórias
                 erros = 0
                 for idx, dados in respostas_temp.items():
                     if dados["obrigatorio"] and not dados["just"].strip():
@@ -84,13 +82,11 @@ if modo == "Participante (Perito)":
         st.subheader("Ronda 2 - Reavaliação por Consenso")
         st.markdown("Nesta ronda, reveja as afirmações que ainda não obtiveram consenso global na Ronda 1, tendo em conta a média do grupo.")
         
-        # Obter dados da Ronda 1 para calcular médias do grupo e identificar o que vai para a ronda 2
         df_r1 = pd.read_sql_query("SELECT * FROM respostas WHERE round_num = 1", conn)
         
         if df_r1.empty:
             st.warning("Ainda não existem dados suficientes da Ronda 1 para gerar a Ronda 2.")
         else:
-            # Calcular itens que precisam de Ronda 2 (< 80% de concordância com notas 4 ou 5)
             itens_r2 = []
             medias_grupo = {}
             comentarios_grupo = {}
@@ -105,7 +101,6 @@ if modo == "Participante (Perito)":
                     media = df_item['score'].mean()
                     medias_grupo[idx] = media
                     
-                    # Recolher justificações dos colegas
                     justs = df_item[df_item['justification'].str.strip() != '']['justification'].tolist()
                     comentarios_grupo[idx] = justs
                     
@@ -115,9 +110,8 @@ if modo == "Participante (Perito)":
             if not itens_r2:
                 st.success("Parabéns! Todas as afirmações atingiram consenso na Ronda 1. Não é necessária Ronda 2.")
             else:
-                st.info(ensão := f"Existem {len(itens_r2)} afirmações em discussão para a Ronda 2.")
+                st.info(f"Existem {len(itens_r2)} afirmações em discussão para a Ronda 2.")
                 
-                # Verificar voto anterior do perito na Ronda 1
                 df_perito = df_r1[df_r1['expert_id'] == expert_id]
                 
                 with st.form("form_ronda2"):
@@ -177,7 +171,6 @@ elif modo == "Administrador (Investigador)":
         st.subheader("Tabela Geral de Respostas")
         st.dataframe(df_all)
         
-        # Botão para descarregar em CSV
         csv = df_all.to_csv(index=False).encode('utf-8')
         st.download_button(
             label="Descarregar dados em CSV (para o Excel)",
