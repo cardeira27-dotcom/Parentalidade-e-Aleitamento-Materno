@@ -14,6 +14,9 @@ USER_CREDENTIALS = {
 }
 ADMIN_CODE = "investigador2026"
 
+MAIN_GROUP = ["P01", "P02", "P03", "P04", "P05", "P06"]
+TEST_GROUP = ["teste1", "teste2", "teste3", "teste4", "teste5", "teste6"]
+
 def generate_pdf(expert_id, round_num, respostas):
     pdf = FPDF()
     pdf.add_page()
@@ -79,21 +82,43 @@ else:
         expert_id = st.session_state.user
         st.sidebar.title(f"Perito: {expert_id}")
         if st.sidebar.button("Logout"): 
-            st.session_state.logged_in = False; st.session_state.submetido_sucesso = False; st.rerun()
+            st.session_state.logged_in = False
+            st.session_state.submetido_sucesso = False
+            st.rerun()
         
         conn = get_db_connection()
         df_all = pd.read_sql_query("SELECT * FROM respostas", conn)
+        
+        # Identificar o grupo do utilizador
+        current_group = MAIN_GROUP if expert_id in MAIN_GROUP else TEST_GROUP
+        
         ja_r1 = not df_all[(df_all['expert_id'] == expert_id) & (df_all['round_num'] == 1)].empty
         ja_r2 = not df_all[(df_all['expert_id'] == expert_id) & (df_all['round_num'] == 2)].empty
         
-        round_num = 1 if not ja_r1 else (2 if not ja_r2 else 3)
+        # Verificar quantos do grupo concluíram a Ronda 1
+        df_r1_group = df_all[(df_all['round_num'] == 1) & (df_all['expert_id'].isin(current_group))]
+        completed_r1_count = df_r1_group['expert_id'].nunique()
+        all_group_finished = (completed_r1_count >= len(current_group))
+        
+        if not ja_r1: 
+            round_num = 1
+        elif ja_r2: 
+            round_num = 3
+        else:
+            # Já fez a Ronda 1, quer ir para a Ronda 2
+            if all_group_finished:
+                round_num = 2
+            else:
+                round_num = "espera_r2"
             
         if round_num == 3:
             st.success("🎉 Estudo concluído. Obrigado!")
+        elif round_num == "espera_r2":
+            st.info(f"⏳ **Obrigado por submeter a Ronda 1!**\n\nA Ronda 2 só ficará disponível quando todos os 6 elementos do seu grupo concluírem a Ronda 1. Atualmente, estão concluídas **{completed_r1_count} de 6** participações. Por favor, volte mais tarde.")
         else:
             st.header(f"Ronda {round_num}")
             if st.session_state.submetido_sucesso:
-                st.success("Submetido!")
+                st.success("Submetido com sucesso!")
                 st.download_button(f"Baixar PDF (Ronda {round_num})", data=st.session_state.pdf_bytes, file_name=f"ronda_{round_num}_{expert_id}.pdf")
             else:
                 if round_num == 1:
@@ -126,8 +151,16 @@ else:
                                 conn.commit(); st.session_state.pdf_bytes = generate_pdf(expert_id, 2, respostas_r2); st.session_state.submetido_sucesso = True; st.rerun()
         conn.close()
     else:
+        # --- ÁREA DO ADMINISTRADOR ---
+        st.sidebar.title("Painel Admin")
+        if st.sidebar.button("Logout"): 
+            st.session_state.logged_in = False
+            st.session_state.submetido_sucesso = False
+            st.rerun()
+            
         st.title("Painel do Investigador")
-        conn = get_db_connection(); df_adm = pd.read_sql_query("SELECT * FROM respostas", conn)
+        conn = get_db_connection()
+        df_adm = pd.read_sql_query("SELECT * FROM respostas", conn)
         st.dataframe(df_adm)
         if not df_adm.empty:
             csv = df_adm.to_csv(index=False).encode('utf-8')
