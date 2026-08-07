@@ -3,13 +3,18 @@ import sqlite3
 import pandas as pd
 from fpdf import FPDF
 
-# Configuração da Página
-st.set_page_config(page_title="Painel Delphi", layout="wide")
+st.set_page_config(page_title="Painel Delphi - Enfermagem", layout="wide")
 
-USER_CREDENTIALS = {"P01": "codigo123", "P02": "codigo456", "P03": "codigo789", "P04": "codigo000", "P05": "codigo111", "P06": "codigo222"}
+USER_CREDENTIALS = {
+    "P01": "codigo123",
+    "P02": "codigo456",
+    "P03": "codigo789",
+    "P04": "codigo000",
+    "P05": "codigo111",
+    "P06": "codigo222"
+}
 ADMIN_CODE = "investigador2026"
 
-# --- FUNÇÃO GERADOR PDF ---
 def generate_pdf(expert_id, round_num, respostas):
     pdf = FPDF()
     pdf.add_page()
@@ -26,13 +31,11 @@ def generate_pdf(expert_id, round_num, respostas):
         pdf.ln(3)
     return pdf.output(dest='S').encode('latin-1')
 
-# --- DB ---
 def get_db_connection():
     conn = sqlite3.connect("delphi_data.db")
     conn.execute('CREATE TABLE IF NOT EXISTS respostas (expert_id TEXT, round_num INTEGER, statement_id INTEGER, score INTEGER, justification TEXT, PRIMARY KEY (expert_id, round_num, statement_id))')
     return conn
 
-# --- AFIRMAÇÕES ---
 AFIRMACOES = [
     "O enfermeiro deve incluir o pai como parceiro ativo no plano de cuidados de amamentação, definindo tarefas logísticas específicas desde o pré-parto.",
     "A consulta de preparação para a parentalidade deve reservar momentos exclusivos de treino prático dirigidos ao pai, focando-se no apoio instrumental e emocional.",
@@ -60,17 +63,16 @@ AFIRMACOES = [
     "As orientações fornecidas pelos diferentes níveis de cuidados (hospital/centro de saúde) devem ser unificadas, evitando mensagens contraditórias."
 ]
 
-# --- LOGIN ---
 if 'logged_in' not in st.session_state: st.session_state.logged_in = False
 if not st.session_state.logged_in:
     st.title("Login - Estudo Delphi")
-    u, c = st.text_input("ID"), st.text_input("Código", type="password")
+    u, c = st.text_input("ID de Perito"), st.text_input("Código de Acesso", type="password")
     if st.button("Entrar"):
         if u in USER_CREDENTIALS and USER_CREDENTIALS[u] == c:
             st.session_state.logged_in = True; st.session_state.user = u; st.rerun()
         elif u == "admin" and c == ADMIN_CODE:
             st.session_state.logged_in = True; st.session_state.user = "ADMIN"; st.rerun()
-        else: st.error("Erro")
+        else: st.error("Credenciais inválidas.")
 else:
     if st.session_state.user != "ADMIN":
         expert_id = st.session_state.user
@@ -78,39 +80,98 @@ else:
         if st.sidebar.button("Logout"): st.session_state.logged_in = False; st.rerun()
         
         conn = get_db_connection()
-        # Verificar ronda automática
-        df_user = pd.read_sql_query("SELECT MAX(round_num) as last_round FROM respostas WHERE expert_id = ?", conn, params=(expert_id,))
-        last_round = df_user['last_round'].iloc[0]
-        round_num = 1 if last_round is None else 2
+        df_all = pd.read_sql_query("SELECT * FROM respostas", conn)
         
-        if round_num > 2:
-            st.success("Obrigado! Estudo concluído para si.")
+        # Determinar ronda automaticamente com base no histórico do perito
+        ja_r1 = not df_all[(df_all['expert_id'] == expert_id) & (df_all['round_num'] == 1)].empty
+        ja_r2 = not df_all[(df_all['expert_id'] == expert_id) & (df_all['round_num'] == 2)].empty
+        
+        if not ja_r1:
+            round_num = 1
+        elif not ja_r2:
+            round_num = 2
+        else:
+            round_num = 3 # Concluído
+            
+        if round_num == 3:
+            st.success("🎉 Já concluiu todas as rondas previstas para este estudo. Muito obrigado pela sua valiosa participação!")
         else:
             st.header(f"Ronda {round_num}")
-            with st.form("form"):
-                respostas = {}
-                for i, af in enumerate(AFIRMACOES):
-                    st.markdown(f"**{af}**")
-                    s = st.radio(f"Nota {i+1}", [1, 2, 3, 4, 5], key=f"s_{i}", horizontal=True)
-                    j = st.text_area(f"Justificação {i+1}", key=f"j_{i}")
-                    respostas[i+1] = {"score": s, "just": j, "obr": (s==1 or s==5)}
-                    st.divider()
-                if st.form_submit_button("Submeter"):
-                    if any(d['obr'] and not d['just'] for d in respostas.values()): st.error("Justificação obrigatória (1 ou 5).")
-                    else:
-                        for idx, d in respostas.items():
-                            conn.execute('INSERT OR REPLACE INTO respostas VALUES (?, ?, ?, ?, ?)', (expert_id, round_num, idx, d['score'], d['just']))
-                        conn.commit()
-                        st.session_state.pdf = generate_pdf(expert_id, round_num, respostas)
-                        st.session_state.download_data = (expert_id, round_num, respostas)
-                        st.rerun()
             
-            if 'download_data' in st.session_state:
-                st.success("Submetido!")
-                st.download_button("Baixar PDF", data=st.session_state.pdf, file_name=f"ronda_{round_num}_{expert_id}.pdf")
+            if round_num == 1:
+                st.info("Classifique cada afirmação de 1 a 5. A justificação é obrigatória se votar 1 ou 5.")
+                with st.form("form_r1"):
+                    respostas = {}
+                    for i, af in enumerate(AFIRMACOES):
+                        st.markdown(f"**{af}**")
+                        s = st.radio(f"Nota {i+1}", [1, 2, 3, 4, 5], key=f"s_{i}", horizontal=True)
+                        j = st.text_area(f"Justificação {i+1}", key=f"j_{i}")
+                        respostas[i+1] = {"score": s, "just": j, "obr": (s==1 or s==5)}
+                        st.divider()
+                    if st.form_submit_button("Submeter Ronda 1"):
+                        if any(d['obr'] and not d['just'] for d in respostas.values()):
+                            st.error("Atenção: A justificação é obrigatória nas respostas 1 ou 5.")
+                        else:
+                            for idx, d in respostas.items():
+                                conn.execute('INSERT OR REPLACE INTO respostas VALUES (?, ?, ?, ?, ?)', (expert_id, 1, idx, d['score'], d['just']))
+                            conn.commit()
+                            pdf_bytes = generate_pdf(expert_id, 1, respostas)
+                            st.success("Ronda 1 submetida com sucesso!")
+                            st.download_button("Baixar comprovativo em PDF (Ronda 1)", data=pdf_bytes, file_name=f"ronda_1_{expert_id}.pdf")
+                            st.stop()
+            
+            elif round_num == 2:
+                # Calcular divergências da Ronda 1 (Consenso definido se >= 80% votaram 4 ou 5)
+                df_r1 = df_all[df_all['round_num'] == 1]
+                divergencias = []
+                for i in range(1, 25):
+                    scores_item = df_r1[df_r1['statement_id'] == i]['score']
+                    if not scores_item.empty:
+                        concordancia = (scores_item >= 4).mean()
+                        if concordancia < 0.8:
+                            divergencias.append(i)
+                
+                if not divergencias:
+                    st.success("Parabéns! Todas as afirmações atingiram consenso na Ronda 1. Não existem divergências para a Ronda 2.")
+                else:
+                    st.info(f"Nesta Ronda 2, são apresentadas apenas as {len(divergencias)} afirmações que não obtiveram consenso global na Ronda 1.")
+                    with st.form("form_r2"):
+                        respostas_r2 = {}
+                        for idx in divergencias:
+                            # Voto do próprio perito na Ronda 1
+                            voto_antigo = df_r1[(df_r1['expert_id'] == expert_id) & (df_r1['statement_id'] == idx)]['score'].values[0]
+                            
+                            # Votos dos outros participantes (anónimo)
+                            outros_votos = df_r1[(df_r1['statement_id'] == idx) & (df_r1['expert_id'] != expert_id)]['score'].tolist()
+                            outros_str = ", ".join(map(str, outros_votos)) if outros_votos else "Sem outros registos"
+                            
+                            st.markdown(f"### Afirmação {idx}: {AFIRMACOES[idx-1]}")
+                            st.markdown(f"👤 **Na Ronda 1, o seu voto foi:** `{voto_antigo}`")
+                            st.markdown(f"👥 **Os outros participantes responderam:** `{outros_str}` (anónimo)")
+                            
+                            s = st.radio(f"Novo voto (Afirmação {idx})", [1, 2, 3, 4, 5], key=f"s2_{idx}", horizontal=True, index=int(voto_antigo)-1)
+                            j = st.text_area(f"Nova justificação (Afirmação {idx})", key=f"j2_{idx}")
+                            respostas_r2[idx] = {"score": s, "just": j, "obr": (s==1 or s==5)}
+                            st.divider()
+                            
+                        if st.form_submit_button("Submeter Ronda 2"):
+                            if any(d['obr'] and not d['just'] for d in respostas_r2.values()):
+                                st.error("Atenção: A justificação é obrigatória nas respostas 1 ou 5.")
+                            else:
+                                for idx, d in respostas_r2.items():
+                                    conn.execute('INSERT OR REPLACE INTO respostas VALUES (?, ?, ?, ?, ?)', (expert_id, 2, idx, d['score'], d['just']))
+                                conn.commit()
+                                pdf_bytes = generate_pdf(expert_id, 2, respostas_r2)
+                                st.success("Ronda 2 submetida com sucesso!")
+                                st.download_button("Baixar comprovativo em PDF (Ronda 2)", data=pdf_bytes, file_name=f"ronda_2_{expert_id}.pdf")
+                                st.stop()
         conn.close()
     else:
-        st.title("Admin")
+        st.title("Área de Investigador (Painel de Controlo)")
         conn = get_db_connection()
-        st.dataframe(pd.read_sql_query("SELECT * FROM respostas", conn))
+        df_admin = pd.read_sql_query("SELECT * FROM respostas", conn)
+        st.dataframe(df_admin)
+        if not df_admin.empty:
+            csv = df_admin.to_csv(index=False).encode('utf-8')
+            st.download_button("Exportar todos os dados para Excel (CSV)", data=csv, file_name='dados_estudo_delphi.csv', mime='text/csv')
         conn.close()
