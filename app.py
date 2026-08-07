@@ -4,17 +4,9 @@ import pandas as pd
 from fpdf import FPDF
 
 # Configuração da Página
-st.set_page_config(page_title="Painel Delphi - Enfermagem", layout="wide")
+st.set_page_config(page_title="Painel Delphi", layout="wide")
 
-# --- DEFINA AQUI OS SEUS CÓDIGOS DE ACESSO ---
-USER_CREDENTIALS = {
-    "P01": "codigo123",
-    "P02": "codigo456",
-    "P03": "codigo789",
-    "P04": "codigo000",
-    "P05": "codigo111",
-    "P06": "codigo222"
-}
+USER_CREDENTIALS = {"P01": "codigo123", "P02": "codigo456", "P03": "codigo789", "P04": "codigo000", "P05": "codigo111", "P06": "codigo222"}
 ADMIN_CODE = "investigador2026"
 
 # --- FUNÇÃO GERADOR PDF ---
@@ -34,15 +26,13 @@ def generate_pdf(expert_id, round_num, respostas):
         pdf.ln(3)
     return pdf.output(dest='S').encode('latin-1')
 
-# --- DB INIT ---
-def init_db():
+# --- DB ---
+def get_db_connection():
     conn = sqlite3.connect("delphi_data.db")
-    c = conn.cursor()
-    c.execute('CREATE TABLE IF NOT EXISTS respostas (expert_id TEXT, round_num INTEGER, statement_id INTEGER, score INTEGER, justification TEXT, PRIMARY KEY (expert_id, round_num, statement_id))')
-    conn.commit()
-    conn.close()
-init_db()
+    conn.execute('CREATE TABLE IF NOT EXISTS respostas (expert_id TEXT, round_num INTEGER, statement_id INTEGER, score INTEGER, justification TEXT, PRIMARY KEY (expert_id, round_num, statement_id))')
+    return conn
 
+# --- AFIRMAÇÕES ---
 AFIRMACOES = [
     "O enfermeiro deve incluir o pai como parceiro ativo no plano de cuidados de amamentação, definindo tarefas logísticas específicas desde o pré-parto.",
     "A consulta de preparação para a parentalidade deve reservar momentos exclusivos de treino prático dirigidos ao pai, focando-se no apoio instrumental e emocional.",
@@ -74,58 +64,53 @@ AFIRMACOES = [
 if 'logged_in' not in st.session_state: st.session_state.logged_in = False
 if not st.session_state.logged_in:
     st.title("Login - Estudo Delphi")
-    user_input = st.text_input("ID de Perito")
-    code_input = st.text_input("Código de Acesso", type="password")
+    u, c = st.text_input("ID"), st.text_input("Código", type="password")
     if st.button("Entrar"):
-        if user_input in USER_CREDENTIALS and USER_CREDENTIALS[user_input] == code_input:
-            st.session_state.logged_in = True
-            st.session_state.user = user_input
-            st.rerun()
-        elif user_input == "admin" and code_input == ADMIN_CODE:
-            st.session_state.logged_in = True
-            st.session_state.user = "ADMIN"
-            st.rerun()
-        else: st.error("Credenciais inválidas.")
+        if u in USER_CREDENTIALS and USER_CREDENTIALS[u] == c:
+            st.session_state.logged_in = True; st.session_state.user = u; st.rerun()
+        elif u == "admin" and c == ADMIN_CODE:
+            st.session_state.logged_in = True; st.session_state.user = "ADMIN"; st.rerun()
+        else: st.error("Erro")
 else:
-    # --- ÁREA DO PERITO ---
     if st.session_state.user != "ADMIN":
         expert_id = st.session_state.user
         st.sidebar.title(f"Perito: {expert_id}")
         if st.sidebar.button("Logout"): st.session_state.logged_in = False; st.rerun()
         
-        round_num = st.sidebar.radio("Escolha a Ronda:", [1, 2])
-        conn = sqlite3.connect("delphi_data.db")
+        conn = get_db_connection()
+        # Verificar ronda automática
+        df_user = pd.read_sql_query("SELECT MAX(round_num) as last_round FROM respostas WHERE expert_id = ?", conn, params=(expert_id,))
+        last_round = df_user['last_round'].iloc[0]
+        round_num = 1 if last_round is None else 2
         
-        st.header(f"Ronda {round_num}")
-        with st.form("form_delphi"):
-            respostas = {}
-            for i, afirmacao in enumerate(AFIRMACOES):
-                st.markdown(f"**{afirmacao}**")
-                score = st.radio(f"Nota {i+1}", [1, 2, 3, 4, 5], key=f"s_{i}", horizontal=True)
-                just = st.text_area(f"Justificação {i+1}", key=f"j_{i}")
-                respostas[i+1] = {"score": score, "just": just, "obrigatorio": (score==1 or score==5)}
-                st.divider()
+        if round_num > 2:
+            st.success("Obrigado! Estudo concluído para si.")
+        else:
+            st.header(f"Ronda {round_num}")
+            with st.form("form"):
+                respostas = {}
+                for i, af in enumerate(AFIRMACOES):
+                    st.markdown(f"**{af}**")
+                    s = st.radio(f"Nota {i+1}", [1, 2, 3, 4, 5], key=f"s_{i}", horizontal=True)
+                    j = st.text_area(f"Justificação {i+1}", key=f"j_{i}")
+                    respostas[i+1] = {"score": s, "just": j, "obr": (s==1 or s==5)}
+                    st.divider()
+                if st.form_submit_button("Submeter"):
+                    if any(d['obr'] and not d['just'] for d in respostas.values()): st.error("Justificação obrigatória (1 ou 5).")
+                    else:
+                        for idx, d in respostas.items():
+                            conn.execute('INSERT OR REPLACE INTO respostas VALUES (?, ?, ?, ?, ?)', (expert_id, round_num, idx, d['score'], d['just']))
+                        conn.commit()
+                        st.session_state.pdf = generate_pdf(expert_id, round_num, respostas)
+                        st.session_state.download_data = (expert_id, round_num, respostas)
+                        st.rerun()
             
-            if st.form_submit_button("Submeter"):
-                # Validação
-                if any(dados['obrigatorio'] and not dados['just'] for dados in respostas.values()):
-                    st.error("Justificação obrigatória nas respostas 1 ou 5.")
-                else:
-                    c = conn.cursor()
-                    for idx, dados in respostas.items():
-                        c.execute('INSERT OR REPLACE INTO respostas VALUES (?, ?, ?, ?, ?)', (expert_id, round_num, idx, dados['score'], dados['just']))
-                    conn.commit()
-                    st.success("Submetido!")
-                    # Geração PDF
-                    pdf_bytes = generate_pdf(expert_id, round_num, respostas)
-                    st.download_button("Baixar comprovativo em PDF", data=pdf_bytes, file_name=f"ronda_{round_num}_{expert_id}.pdf")
+            if 'download_data' in st.session_state:
+                st.success("Submetido!")
+                st.download_button("Baixar PDF", data=st.session_state.pdf, file_name=f"ronda_{round_num}_{expert_id}.pdf")
         conn.close()
     else:
-        # --- ÁREA ADMIN ---
-        st.title("Painel de Investigador")
-        conn = sqlite3.connect("delphi_data.db")
-        df = pd.read_sql_query("SELECT * FROM respostas", conn)
-        st.dataframe(df)
-        csv = df.to_csv(index=False).encode('utf-8')
-        st.download_button("Exportar tudo para Excel", data=csv, file_name='dados_delphi.csv')
+        st.title("Admin")
+        conn = get_db_connection()
+        st.dataframe(pd.read_sql_query("SELECT * FROM respostas", conn))
         conn.close()
