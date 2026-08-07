@@ -16,6 +16,33 @@ ADMIN_CODE = "investigador2026"
 MAIN_GROUP = ["P01", "P02", "P03", "P04", "P05", "P06"]
 TEST_GROUP = ["teste1", "teste2", "teste3", "teste4", "teste5", "teste6"]
 
+LISTA_24_AFIRMACOES = [
+    "O enfermeiro deve incluir o pai como parceiro ativo no plano de cuidados de amamentação, definindo tarefas logísticas específicas desde o pré-parto.",
+    "A consulta de preparação para a parentalidade deve reservar momentos exclusivos de treino prático dirigidos ao pai, focando-se no apoio instrumental e emocional.",
+    "O enfermeiro deve avaliar as competências de 'trabalho de equipa parental' e promover a negociação de papéis entre o casal para prevenir a exaustão materna.",
+    "É necessário validar o papel do pai durante a consulta de aleitamento, reconhecendo a sua necessidade de suporte e inclusão na díade mãe-bebé.",
+    "O enfermeiro deve aplicar sistematicamente ferramentas de avaliação familiar (genograma/ecomapa) para mapear a rede de suporte e identificar potenciais influenciadores (avós/sogras).",
+    "As sessões educativas devem promover a integração de figuras transgeracionais, clarificando mitos e alinhando conselhos práticos com a evidência científica atual.",
+    "A intervenção de enfermagem deve capacitar as avós/sogras para atuarem como promotoras e facilitadoras da amamentação, valorizando o seu saber experiencial.",
+    "Devem ser identificadas precocemente as pressões familiares dissonantes, atuando o enfermeiro como mediador na gestão de expectativas da família alargada.",
+    "O enfermeiro deve realizar uma avaliação multidimensional da família (dimensões da coesão e flexibilidade) e não apenas técnica sobre a pega do bebé.",
+    "A intervenção deve ser contínua e proativa, garantindo o seguimento desde o pré-parto até ao pós-parto, com maior intensidade nos primeiros 15 dias de vida.",
+    "O foco da consulta deve incidir na promoção da autoeficácia materna, utilizando estratégias de resolução de problemas e treino de competências práticas.",
+    "A prática clínica deve adotar formatos híbridos (presencial e digital) que permitam o acompanhamento contínuo e a rápida resposta a dúvidas dos pais.",
+    "Quando a rede de apoio informal é fraca ou ausente, o enfermeiro deve intensificar o número de contactos (presenciais ou remotos) como estratégia de compensação.",
+    "O enfermeiro deve assumir um papel de 'apoio substituto', facilitando a ligação dos casais isolados a grupos de suporte comunitário ou pares.",
+    "O enfermeiro deve promover espaços de reflexão clínica sobre a reorganização da vida do casal, focando na partilha equitativa de tarefas domésticas.",
+    "A literacia em saúde deve incluir estratégias de comunicação conjugal para assegurar que o apoio emocional é efetivamente percebido pelo outro elemento do casal.",
+    "Famílias com níveis extremos de coesão (muito ligadas/aglutinadas) devem ser sinalizadas como de risco aumentado para exaustão parental no aleitamento.",
+    "O enfermeiro deve realizar rastreio de saúde mental materna e paterna, considerando que a baixa satisfação conjugal é um preditor de abandono do AME.",
+    "Em caso de transição para leite adaptado por motivos clínicos ou de dor, a intervenção de enfermagem deve ser empática, focada em mitigar o sentimento de falha parental.",
+    "É responsabilidade do enfermeiro treinar técnicas de extração, conservação e gestão do leite materno antes do regresso da mãe à vida profissional.",
+    "Os cursos de parentalidade devem substituir a componente puramente teórica por treinos de simulação (posicionamentos, manuseamento, sinais de fome).",
+    "As intervenções de educação para a saúde devem ser personalizadas às necessidades imediatas da fase de vida do bebé, abandonando o modelo 'estanque' de aulas.",
+    "O treino de competências de aleitamento deve ser executado até que os pais demonstrem confiança na técnica e na gestão da dor (pega correta).",
+    "As orientações fornecidas pelos diferentes níveis de cuidados (hospital/centro de saúde) devem ser unificadas, evitando mensagens contraditórias."
+]
+
 def generate_pdf(expert_id, round_num, respostas, afirmacoes_dict):
     pdf = FPDF()
     pdf.add_page()
@@ -40,19 +67,11 @@ def init_db():
     conn.execute('CREATE TABLE IF NOT EXISTS config (chave TEXT PRIMARY KEY, valor TEXT)')
     
     c = conn.cursor()
-    # Inserir afirmações padrão se a tabela estiver vazia
     c.execute('SELECT COUNT(*) FROM afirmacoes')
     if c.fetchone()[0] == 0:
-        default_af = [
-            "O enfermeiro deve incluir o pai como parceiro ativo no plano de cuidados de amamentação, definindo tarefas logísticas específicas desde o pré-parto.",
-            "A consulta de preparação para a parentalidade deve reservar momentos exclusivos de treino prático dirigidos ao pai, focando-se no apoio instrumental e emocional.",
-            "O enfermeiro deve avaliar as competências de 'trabalho de equipa parental' e promover a negociação de papéis entre o casal para prevenir a exaustão materna.",
-            "É necessário validar o papel do pai durante a consulta de aleitamento, reconhecendo a sua necessidade de suporte e inclusão na díade mãe-bebé."
-        ]
-        for af in default_af:
+        for af in LISTA_24_AFIRMACOES:
             c.execute('INSERT INTO afirmacoes (texto) VALUES (?)', (af,))
             
-    # Configurações padrão se a tabela estiver vazia
     c.execute('SELECT COUNT(*) FROM config')
     if c.fetchone()[0] == 0:
         c.execute('INSERT INTO config VALUES ("scale_min", "1")')
@@ -149,7 +168,6 @@ else:
                                 st.rerun()
                 else:
                     df_r1 = df_all[df_all['round_num'] == 1]
-                    threshold = 0.8 * df_r1['expert_id'].nunique() if not df_r1.empty else 1
                     div = []
                     for af_id in AFIRMACOES.keys():
                         scores_item = df_r1[df_r1['statement_id'] == af_id]['score']
@@ -223,8 +241,19 @@ else:
                     else: st.warning("Sem dados.")
                     
         with tab2:
-            st.subheader("Adicionar Nova Afirmação")
-            nova_af = st.text_area("Texto da Afirmação")
+            st.subheader("Gerir Afirmações")
+            
+            # Botão para carregar as 24 oficiais automaticamente
+            if st.button("🔄 Carregar as 24 Afirmações Oficiais"):
+                conn.execute("DELETE FROM afirmacoes")
+                for af in LISTA_24_AFIRMACOES:
+                    conn.execute("INSERT INTO afirmacoes (texto) VALUES (?)", (af,))
+                conn.commit()
+                st.success("As 24 afirmações oficiais foram carregadas com sucesso!")
+                st.rerun()
+                
+            st.markdown("---")
+            nova_af = st.text_area("Adicionar Nova Afirmação Individual")
             if st.button("Adicionar Afirmação"):
                 if nova_af.strip():
                     conn.execute("INSERT INTO afirmacoes (texto) VALUES (?)", (nova_af,))
@@ -235,7 +264,7 @@ else:
                     st.error("O texto não pode estar vazio.")
                     
             st.markdown("---")
-            st.subheader("Afirmações Existentes")
+            st.subheader("Lista de Afirmações Atuais")
             df_af_list = pd.read_sql_query("SELECT * FROM afirmacoes", conn)
             for _, row in df_af_list.iterrows():
                 col1, col2 = st.columns([8, 1])
