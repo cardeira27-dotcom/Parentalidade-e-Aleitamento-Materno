@@ -6,7 +6,6 @@ from fpdf import FPDF
 st.set_page_config(page_title="Painel Delphi - Enfermagem", layout="wide")
 
 USER_CREDENTIALS = {
-    "teste": "teste"
     "P01": "codigo123",
     "P02": "codigo456",
     "P03": "codigo789",
