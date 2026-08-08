@@ -37,6 +37,9 @@ def get_db_connection():
     
     c.execute("SELECT COUNT(*) FROM configuracoes WHERE chave='max_rondas'")
     if c.fetchone()[0] == 0: c.execute("INSERT INTO configuracoes VALUES ('max_rondas', '2')")
+    
+    c.execute("SELECT COUNT(*) FROM configuracoes WHERE chave='regra_justificacao'")
+    if c.fetchone()[0] == 0: c.execute("INSERT INTO configuracoes VALUES ('regra_justificacao', 'Extremos (1 e Max)')")
     conn.commit()
 
     c.execute("SELECT COUNT(*) FROM utilizadores")
@@ -63,7 +66,7 @@ def get_db_connection():
             ("Quando a rede de apoio informal é fraca ou ausente, o enfermeiro deve intensificar o número de contactos (presenciais ou remotos) como estratégia de compensação.",),
             ("O enfermeiro deve assumir um papel de 'apoio substituto', facilitando a ligação dos casais isolados a grupos de suporte comunitário ou pares.",),
             ("O enfermeiro deve promover espaços de reflexão clínica sobre a reorganização da vida do casal, focando na partilha equitativa de tarefas domésticas.",),
-            ("A literacia em saúde deve incluir estratégias de comunicação conjugal para assegurar que o apoio emocional é efetivamente percebido pelo outro elemento do casal.",),
+            ("A literacia em saúde deve incluir estratégias de comunicação conjugal para assegurar que o apoio emocional is efetivamente percebido pelo outro elemento do casal.",),
             ("Famílias com níveis extremos de coesão (muito ligadas/aglutinadas) devem ser sinalizadas como de risco aumentado para exaustão parental no aleitamento.",),
             ("O enfermeiro deve realizar rastreio de saúde mental materna e paterna, considerando que a baixa satisfação conjugal é um preditor de abandono do AME.",),
             ("Em caso de transição para leite adaptado por motivos clínicos ou de dor, a intervenção de enfermagem deve ser empática, focada em mitigar o sentimento de falha parental.",),
@@ -76,6 +79,17 @@ def get_db_connection():
         c.executemany("INSERT INTO afirmacoes (texto) VALUES (?)", afirmacoes_iniciais)
         conn.commit()
     return conn
+
+def verificar_obrigatoriedade(score, escala_max, regra):
+    if regra == "Extremos (1 e Max)":
+        return score == 1 or score == escala_max
+    elif regra == "Sempre obrigatória":
+        return True
+    elif regra == "Apenas notas baixas (1)":
+        return score == 1
+    elif regra == "Desativada (Opcional)":
+        return False
+    return score == 1 or score == escala_max
 
 if 'logged_in' not in st.session_state: st.session_state.logged_in = False
 if 'submetido_sucesso' not in st.session_state: st.session_state.submetido_sucesso = False
@@ -105,13 +119,14 @@ else:
         df_af = pd.read_sql_query("SELECT * FROM afirmacoes ORDER BY id", conn)
         escala_max = int(conn.execute("SELECT valor FROM configuracoes WHERE chave='escala_max'").fetchone()[0])
         max_rondas = int(conn.execute("SELECT valor FROM configuracoes WHERE chave='max_rondas'").fetchone()[0])
+        regra_just = conn.execute("SELECT valor FROM configuracoes WHERE chave='regra_justificacao'").fetchone()[0]
         escala_lista = list(range(1, escala_max + 1))
         
         rondas_feitas = df_all[df_all['expert_id'] == expert_id]['round_num'].max()
         round_num = 1 if pd.isna(rondas_feitas) else int(rondas_feitas) + 1
             
         if round_num > max_rondas:
-            st.success("🎉 Já concluiu todas as rondas previstas para este estudo. Muito obrigado pela sua valiosa participação!")
+            st.success("🎉 Já concluiu todas as rondas previstas para este estudo. Muito obrigado!")
         else:
             st.header(f"Ronda {round_num}")
             if st.session_state.submetido_sucesso:
@@ -119,7 +134,7 @@ else:
                 st.download_button(f"Baixar comprovativo em PDF", data=st.session_state.pdf_bytes, file_name=f"ronda_{round_num}_{expert_id}.pdf")
             else:
                 if round_num == 1:
-                    st.info(f"Classifique de 1 a {escala_max}. A justificação é obrigatória nos extremos (1 ou {escala_max}).")
+                    st.info(f"Classifique de 1 a {escala_max}. Regra de justificação: **{regra_just}**.")
                     with st.form("form_r1"):
                         respostas = {}
                         for _, row in df_af.iterrows():
@@ -127,12 +142,14 @@ else:
                             st.markdown(f"**{row['texto']}**")
                             s = st.radio(f"Nota (ID:{idx})", escala_lista, key=f"s_{idx}", horizontal=True)
                             j = st.text_area(f"Justificação (ID:{idx})", key=f"j_{idx}")
-                            respostas[idx] = {"score": s, "just": j, "obr": (s==1 or s==escala_max)}
+                            
+                            obr = verificar_obrigatoriedade(s, escala_max, regra_just)
+                            respostas[idx] = {"score": s, "just": j, "obr": obr}
                             st.divider()
                         
                         if st.form_submit_button("Submeter Ronda 1"):
                             if any(d['obr'] and not d['just'].strip() for d in respostas.values()):
-                                st.error(f"Atenção: A justificação é obrigatória nas respostas 1 ou {escala_max}.")
+                                st.error("Atenção: Existem respostas que exigem justificação obrigatória segundo a regra configurada.")
                             else:
                                 for idx, d in respostas.items():
                                     conn.execute('INSERT OR REPLACE INTO respostas VALUES (?, ?, ?, ?, ?)', (expert_id, 1, idx, d['score'], d['just']))
@@ -155,7 +172,7 @@ else:
                     if not divergencias:
                         st.success(f"Parabéns! Todas as afirmações atingiram consenso na Ronda {ronda_anterior}.")
                     else:
-                        st.info(f"Nesta Ronda {round_num}, responda apenas às {len(divergencias)} afirmações que não obtiveram consenso global na ronda anterior.")
+                        st.info(f"Nesta Ronda {round_num}, responda apenas às {len(divergencias)} afirmações sem consenso. Regra de justificação: **{regra_just}**.")
                         with st.form(f"form_r{round_num}"):
                             respostas_rn = {}
                             for idx in divergencias:
@@ -172,12 +189,14 @@ else:
                                 index_voto = int(voto_antigo) - 1 if int(voto_antigo) in escala_lista else 0
                                 s = st.radio(f"Novo voto (ID:{idx})", escala_lista, key=f"sr_{idx}", horizontal=True, index=index_voto)
                                 j = st.text_area(f"Nova justificação (ID:{idx})", key=f"jr_{idx}")
-                                respostas_rn[idx] = {"score": s, "just": j, "obr": (s==1 or s==escala_max)}
+                                
+                                obr = verificar_obrigatoriedade(s, escala_max, regra_just)
+                                respostas_rn[idx] = {"score": s, "just": j, "obr": obr}
                                 st.divider()
                                 
                             if st.form_submit_button(f"Submeter Ronda {round_num}"):
                                 if any(d['obr'] and not d['just'].strip() for d in respostas_rn.values()):
-                                    st.error(f"Atenção: A justificação é obrigatória nas respostas 1 ou {escala_max}.")
+                                    st.error("Atenção: Existem respostas que exigem justificação obrigatória segundo a regra configurada.")
                                 else:
                                     for idx, d in respostas_rn.items():
                                         conn.execute('INSERT OR REPLACE INTO respostas VALUES (?, ?, ?, ?, ?)', (expert_id, round_num, idx, d['score'], d['just']))
@@ -194,6 +213,7 @@ else:
         conn = get_db_connection()
         escala_max = int(conn.execute("SELECT valor FROM configuracoes WHERE chave='escala_max'").fetchone()[0])
         max_rondas = int(conn.execute("SELECT valor FROM configuracoes WHERE chave='max_rondas'").fetchone()[0])
+        regra_just = conn.execute("SELECT valor FROM configuracoes WHERE chave='regra_justificacao'").fetchone()[0]
         
         with tab1:
             st.subheader("Matriz Estatística por Ronda")
@@ -203,8 +223,6 @@ else:
                 st.warning("Ainda não existem respostas no estudo para gerar gráficos ou matrizes.")
             else:
                 todas_rondas = sorted(df_all['round_num'].unique())
-                
-                # --- MATRIZ ESTATÍSTICA ---
                 for r in todas_rondas:
                     st.markdown(f"#### Resultados da RONDA {r}")
                     df_r = df_all[df_all['round_num'] == r]
@@ -223,11 +241,7 @@ else:
                     st.download_button(f"Exportar Matriz Ronda {r} (Excel/CSV)", data=csv_matriz, file_name=f'matriz_estatistica_ronda_{r}.csv', mime='text/csv')
                 
                 st.divider()
-                
-                # --- GRÁFICOS DE EVOLUÇÃO ---
                 st.subheader("📈 Evolução Gráfica do Estudo")
-                
-                # Preparar dados para os gráficos
                 dados_graficos = []
                 for r in todas_rondas:
                     df_r = df_all[df_all['round_num'] == r]
@@ -239,30 +253,23 @@ else:
                             dados_graficos.append({"Ronda": f"Ronda {r}", "Afirmação": f"Afirmação {stmt}", "Média": media, "Consenso (%)": cons})
                 
                 df_graf = pd.DataFrame(dados_graficos)
-                
                 if not df_graf.empty:
                     st.markdown("**1. Quantidade de Afirmações com Consenso Alcançado (≥80%) por Ronda**")
                     cons_alcancado = df_graf[df_graf['Consenso (%)'] >= 80].groupby('Ronda').size()
-                    if not cons_alcancado.empty:
-                        st.bar_chart(cons_alcancado)
-                    else:
-                        st.info("Nenhuma afirmação atingiu 80% de consenso até ao momento.")
+                    if not cons_alcancado.empty: st.bar_chart(cons_alcancado)
+                    else: st.info("Nenhuma afirmação atingiu 80% de consenso até ao momento.")
                     
                     colA, colB = st.columns(2)
                     with colA:
                         st.markdown("**2. Evolução da Média (por Afirmação)**")
-                        st.caption("Eixo X: Ronda | Eixo Y: Média da Pontuação")
-                        pivot_media = df_graf.pivot(index='Ronda', columns='Afirmação', values='Média')
-                        st.line_chart(pivot_media)
-                        
+                        st.line_chart(df_graf.pivot(index='Ronda', columns='Afirmação', values='Média'))
                     with colB:
                         st.markdown("**3. Evolução do Índice de Consenso % (por Afirmação)**")
-                        st.caption("Eixo X: Ronda | Eixo Y: % de Consenso")
-                        pivot_cons = df_graf.pivot(index='Ronda', columns='Afirmação', values='Consenso (%)')
-                        st.line_chart(pivot_cons)
+                        st.line_chart(df_graf.pivot(index='Ronda', columns='Afirmação', values='Consenso (%)'))
 
         with tab2:
             st.subheader("Registo Bruto de Dados")
+            df_all = pd.read_sql_query("SELECT * FROM respostas", conn)
             st.dataframe(df_all, use_container_width=True)
             if not df_all.empty:
                 st.download_button("Exportar Excel (Dados Brutos)", data=df_all.to_csv(index=False).encode('utf-8'), file_name='dados_estudo_brutos.csv', mime='text/csv')
@@ -306,19 +313,26 @@ else:
         with tab5:
             st.subheader("Configurações do Estudo")
             
-            col_a, col_b = st.columns(2)
-            with col_a:
-                st.info("Escala máxima de concordância (ex: 5 significa de 1 a 5).")
+            c1, c2, c3 = st.columns(3)
+            with c1:
                 with st.form("form_escala"):
-                    nova_escala = st.number_input("Valor máximo da escala", min_value=3, max_value=10, value=escala_max)
+                    st.markdown("**Escala Máxima**")
+                    nova_escala = st.number_input("Valor máximo", min_value=3, max_value=10, value=escala_max)
                     if st.form_submit_button("Atualizar Escala"):
                         conn.execute("UPDATE configuracoes SET valor=? WHERE chave='escala_max'", (str(nova_escala),)); conn.commit(); st.success("Atualizada!"); st.rerun()
-            
-            with col_b:
-                st.info("Número máximo de rondas a realizar no estudo.")
+            with c2:
                 with st.form("form_rondas"):
-                    novas_rondas = st.number_input("Total de Rondas", min_value=1, max_value=5, value=max_rondas)
+                    st.markdown("**Total de Rondas**")
+                    novas_rondas = st.number_input("Nº de Rondas", min_value=1, max_value=5, value=max_rondas)
                     if st.form_submit_button("Atualizar Rondas"):
                         conn.execute("UPDATE configuracoes SET valor=? WHERE chave='max_rondas'", (str(novas_rondas),)); conn.commit(); st.success("Atualizadas!"); st.rerun()
+            with c3:
+                with st.form("form_regra_just"):
+                    st.markdown("**Regra de Justificação**")
+                    opcoes_regra = ["Extremos (1 e Max)", "Sempre obrigatória", "Apenas notas baixas (1)", "Desativada (Opcional)"]
+                    idx_regra = opcoes_regra.index(regra_just) if regra_just in opcoes_regra else 0
+                    nova_regra = st.selectbox("Exigir justificação em:", opcoes_regra, index=idx_regra)
+                    if st.form_submit_button("Atualizar Regra"):
+                        conn.execute("UPDATE configuracoes SET valor=? WHERE chave='regra_justificacao'", (nova_regra,)); conn.commit(); st.success("Atualizada!"); st.rerun()
                     
         conn.close()
