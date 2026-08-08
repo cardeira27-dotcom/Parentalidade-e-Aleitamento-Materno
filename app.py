@@ -133,9 +133,9 @@ def generate_ai_analysis_prompt(conn, escala_max):
     return prompt
 
 def get_db_connection():
-    conn = sqlite3.connect("delphi_v3.db")
+    conn = sqlite3.connect("delphi_v4.db")
     conn.execute('CREATE TABLE IF NOT EXISTS respostas (expert_id TEXT, round_num INTEGER, statement_id INTEGER, score INTEGER, justification TEXT, PRIMARY KEY (expert_id, round_num, statement_id))')
-    conn.execute('CREATE TABLE IF NOT EXISTS utilizadores (expert_id TEXT PRIMARY KEY, password TEXT)')
+    conn.execute('CREATE TABLE IF NOT EXISTS utilizadores (expert_id TEXT PRIMARY KEY, password TEXT, must_change INTEGER DEFAULT 1)')
     conn.execute('CREATE TABLE IF NOT EXISTS afirmacoes (id INTEGER PRIMARY KEY AUTOINCREMENT, texto TEXT)')
     conn.execute('CREATE TABLE IF NOT EXISTS configuracoes (chave TEXT PRIMARY KEY, valor TEXT)')
     
@@ -153,12 +153,12 @@ def get_db_connection():
     c.execute("SELECT COUNT(*) FROM utilizadores")
     if c.fetchone()[0] == 0:
         utilizadores_base = [
-            ("P01", hash_password("codigo123")), ("P02", hash_password("codigo456")), 
-            ("P03", hash_password("codigo789")), ("P04", hash_password("codigo000")), 
-            ("P05", hash_password("codigo111")), ("P06", hash_password("codigo222")), 
-            ("P07", hash_password("teste123"))
+            ("P01", hash_password("codigo123"), 1), ("P02", hash_password("codigo456"), 1), 
+            ("P03", hash_password("codigo789"), 1), ("P04", hash_password("codigo000"), 1), 
+            ("P05", hash_password("codigo111"), 1), ("P06", hash_password("codigo222"), 1), 
+            ("P07", hash_password("teste123"), 1)
         ]
-        c.executemany('INSERT INTO utilizadores VALUES (?, ?)', utilizadores_base)
+        c.executemany('INSERT INTO utilizadores VALUES (?, ?, ?)', utilizadores_base)
         conn.commit()
 
     c.execute("SELECT COUNT(*) FROM afirmacoes")
@@ -202,6 +202,31 @@ def verificar_obrigatoriedade(score, escala_max, regra):
 
 if 'logged_in' not in st.session_state: st.session_state.logged_in = False
 if 'submetido_sucesso' not in st.session_state: st.session_state.submetido_sucesso = False
+if 'forcing_password_change' not in st.session_state: st.session_state.forcing_password_change = False
+
+# Ecrã de alteração obrigatória de palavra-passe no primeiro acesso
+if st.session_state.forcing_password_change:
+    st.title("Primeiro Acesso - Alteração de Palavra-Passe")
+    st.info("Por razões de segurança, é obrigatório alterar a sua palavra-passe provisória antes de aceder ao estudo.")
+    with st.form("form_change_pass"):
+        nova_p1 = st.text_input("Nova Palavra-Passe", type="password")
+        nova_p2 = st.text_input("Confirme a Nova Palavra-Passe", type="password")
+        btn_alterar = st.form_submit_button("Atualizar Palavra-Passe e Entrar")
+        if btn_alterar:
+            if not nova_p1 or nova_p1 != nova_p2:
+                st.error("As palavras-passe não coincidem ou estão vazias.")
+            else:
+                new_hash = hash_password(nova_p1)
+                conn = get_db_connection()
+                conn.execute("UPDATE utilizadores SET password = ?, must_change = 0 WHERE expert_id = ?", (new_hash, st.session_state.pending_user))
+                conn.commit()
+                conn.close()
+                st.session_state.forcing_password_change = False
+                st.session_state.logged_in = True
+                st.session_state.user = st.session_state.pending_user
+                st.success("Palavra-passe alterada com sucesso!")
+                st.rerun()
+    st.stop()
 
 if not st.session_state.logged_in:
     st.title("Login - Estudo Delphi")
@@ -211,11 +236,18 @@ if not st.session_state.logged_in:
             st.session_state.logged_in = True; st.session_state.user = "ADMIN"; st.rerun()
         else:
             conn = get_db_connection()
-            row = conn.execute("SELECT password FROM utilizadores WHERE expert_id = ?", (u,)).fetchone()
+            row = conn.execute("SELECT password, must_change FROM utilizadores WHERE expert_id = ?", (u,)).fetchone()
             
             if row and verify_password(row[0], c, conn, u):
-                conn.close()
-                st.session_state.logged_in = True; st.session_state.user = u; st.session_state.submetido_sucesso = False; st.rerun()
+                if row[1] == 1:
+                    # Obrigar a alterar password no primeiro acesso
+                    st.session_state.pending_user = u
+                    st.session_state.forcing_password_change = True
+                    conn.close()
+                    st.rerun()
+                else:
+                    conn.close()
+                    st.session_state.logged_in = True; st.session_state.user = u; st.session_state.submetido_sucesso = False; st.rerun()
             else:
                 conn.close()
                 st.error("Credenciais inválidas.")
@@ -421,9 +453,9 @@ else:
                         if novo_id and nova_pass:
                             try:
                                 hashed_nova_pass = hash_password(nova_pass)
-                                conn.execute("INSERT INTO utilizadores VALUES (?, ?)", (novo_id, hashed_nova_pass))
+                                conn.execute("INSERT INTO utilizadores VALUES (?, ?, 1)", (novo_id, hashed_nova_pass))
                                 conn.commit()
-                                st.success(f"Criado o utilizador {novo_id} com password encriptada!")
+                                st.success(f"Criado o utilizador {novo_id} com password encriptada e pendente de alteração!")
                                 st.rerun()
                             except: st.error("O ID já existe.")
             with col2:
