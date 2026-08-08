@@ -24,6 +24,43 @@ def generate_pdf(expert_id, round_num, respostas):
         pdf.ln(3)
     return pdf.output(dest='S').encode('latin-1')
 
+def generate_admin_report_pdf(df_respostas, df_users, df_afirmacoes, escala_max):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", 'B', 16)
+    pdf.cell(0, 10, txt="Relatorio Global do Estudo Delphi", ln=True, align='C')
+    pdf.set_font("Arial", size=11)
+    pdf.cell(0, 8, txt=f"Total de Peritos Registados: {len(df_users)}", ln=True)
+    pdf.cell(0, 8, txt=f"Total de Afirmacoes no Estudo: {len(df_afirmacoes)}", ln=True)
+    pdf.ln(10)
+    
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(0, 10, txt="Resumo Estatistico por Ronda:", ln=True)
+    
+    if not df_respostas.empty:
+        todas_rondas = sorted(df_respostas['round_num'].unique())
+        for r in todas_rondas:
+            pdf.ln(5)
+            pdf.set_font("Arial", 'B', 11)
+            pdf.cell(0, 8, txt=f"--- RONDA {r} ---", ln=True)
+            pdf.set_font("Arial", size=10)
+            
+            df_r = df_respostas[df_respostas['round_num'] == r]
+            pivot = df_r.pivot(index='statement_id', columns='expert_id', values='score')
+            limiar_consenso = escala_max - 1
+            
+            for idx, row in pivot.iterrows():
+                notas = row.dropna()
+                if len(notas) > 0:
+                    media = notas.mean()
+                    cons = (notas >= limiar_consenso).mean() * 100
+                    pdf.multi_cell(0, 6, txt=f"Afirmacao ID {idx}: Media = {media:.2f} | Indice Consenso = {cons:.1f}%")
+    else:
+        pdf.set_font("Arial", size=10)
+        pdf.cell(0, 10, txt="Ainda nao existem respostas registadas no sistema.", ln=True)
+        
+    return pdf.output(dest='S').encode('latin-1')
+
 def get_db_connection():
     conn = sqlite3.connect("delphi_data.db")
     conn.execute('CREATE TABLE IF NOT EXISTS respostas (expert_id TEXT, round_num INTEGER, statement_id INTEGER, score INTEGER, justification TEXT, PRIMARY KEY (expert_id, round_num, statement_id))')
@@ -66,7 +103,7 @@ def get_db_connection():
             ("Quando a rede de apoio informal é fraca ou ausente, o enfermeiro deve intensificar o número de contactos (presenciais ou remotos) como estratégia de compensação.",),
             ("O enfermeiro deve assumir um papel de 'apoio substituto', facilitando a ligação dos casais isolados a grupos de suporte comunitário ou pares.",),
             ("O enfermeiro deve promover espaços de reflexão clínica sobre a reorganização da vida do casal, focando na partilha equitativa de tarefas domésticas.",),
-            ("A literacia em saúde deve incluir estratégias de comunicação conjugal para assegurar que o apoio emocional is efetivamente percebido pelo outro elemento do casal.",),
+            ("A literacia em saúde deve incluir estratégias de comunicação conjugal para assegurar que o apoio emocional é efetivamente percebido pelo outro elemento do casal.",),
             ("Famílias com níveis extremos de coesão (muito ligadas/aglutinadas) devem ser sinalizadas como de risco aumentado para exaustão parental no aleitamento.",),
             ("O enfermeiro deve realizar rastreio de saúde mental materna e paterna, considerando que a baixa satisfação conjugal é um preditor de abandono do AME.",),
             ("Em caso de transição para leite adaptado por motivos clínicos ou de dor, a intervenção de enfermagem deve ser empática, focada em mitigar o sentimento de falha parental.",),
@@ -81,14 +118,10 @@ def get_db_connection():
     return conn
 
 def verificar_obrigatoriedade(score, escala_max, regra):
-    if regra == "Extremos (1 e Max)":
-        return score == 1 or score == escala_max
-    elif regra == "Sempre obrigatória":
-        return True
-    elif regra == "Apenas notas baixas (1)":
-        return score == 1
-    elif regra == "Desativada (Opcional)":
-        return False
+    if regra == "Extremos (1 e Max)": return score == 1 or score == escala_max
+    elif regra == "Sempre obrigatória": return True
+    elif regra == "Apenas notas baixas (1)": return score == 1
+    elif regra == "Desativada (Opcional)": return False
     return score == 1 or score == escala_max
 
 if 'logged_in' not in st.session_state: st.session_state.logged_in = False
@@ -217,8 +250,22 @@ else:
         
         with tab1:
             st.subheader("Matriz Estatística por Ronda")
-            df_all = pd.read_sql_query("SELECT * FROM respostas", conn)
             
+            # --- BOTÃO DE RELATÓRIO GLOBAL PDF PARA O INVESTIGADOR ---
+            df_all_rep = pd.read_sql_query("SELECT * FROM respostas", conn)
+            df_users_rep = pd.read_sql_query("SELECT * FROM utilizadores", conn)
+            df_af_rep = pd.read_sql_query("SELECT * FROM afirmacoes", conn)
+            
+            pdf_global_bytes = generate_admin_report_pdf(df_all_rep, df_users_rep, df_af_rep, escala_max)
+            st.download_button(
+                label="📄 Baixar Relatório Global do Estudo (PDF)",
+                data=pdf_global_bytes,
+                file_name="relatorio_global_estudo_delphi.pdf",
+                mime="application/pdf"
+            )
+            st.divider()
+
+            df_all = df_all_rep
             if df_all.empty:
                 st.warning("Ainda não existem respostas no estudo para gerar gráficos ou matrizes.")
             else:
