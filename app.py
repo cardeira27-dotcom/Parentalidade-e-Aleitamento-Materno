@@ -61,6 +61,54 @@ def generate_admin_report_pdf(df_respostas, df_users, df_afirmacoes, escala_max)
         
     return pdf.output(dest='S').encode('latin-1')
 
+def generate_ai_analysis_prompt(conn, escala_max):
+    df_res = pd.read_sql_query("SELECT * FROM respostas", conn)
+    df_users = pd.read_sql_query("SELECT * FROM utilizadores", conn)
+    df_af = pd.read_sql_query("SELECT * FROM afirmacoes", conn)
+    
+    if df_res.empty:
+        return "Ainda não existem dados de respostas suficientes para gerar a análise para a IA."
+        
+    prompt = "Atue como um Investigador Doutorado especialista em Enfermagem e Metodologia Delphi. Analise criticamente os seguintes resultados obtidos num estudo Delphi sobre parentalidade e aleitamento materno:\n\n"
+    prompt += f"- Total de Peritos Participantes: {len(df_users)}\n"
+    prompt += f"- Total de Afirmações Avaliadas: {len(df_af)}\n"
+    prompt += f"- Escala de Likert utilizada: 1 a {escala_max}\n"
+    prompt += "- Limiar de Consenso definido: >= 80% das respostas nos valores mais altos da escala.\n\n"
+    
+    prompt += "--- DADOS QUANTITATIVOS E QUALITATIVOS POR RONDA ---\n"
+    
+    todas_rondas = sorted(df_res['round_num'].unique())
+    for r in todas_rondas:
+        prompt += f"\n### RONDA {r}\n"
+        df_r = df_res[df_res['round_num'] == r]
+        for _, af_row in df_af.iterrows():
+            stmt_id = af_row['id']
+            texto_af = af_row['texto']
+            df_item = df_r[df_r['statement_id'] == stmt_id]
+            if not df_item.empty:
+                scores = df_item['score'].dropna()
+                media = scores.mean() if len(scores) > 0 else 0
+                std = scores.std() if len(scores) > 1 else 0
+                limiar = escala_max - 1
+                consenso = (scores >= limiar).mean() * 100 if len(scores) > 0 else 0
+                
+                prompt += f"- Afirmação {stmt_id}: \"{texto_af}\"\n"
+                prompt += f"  * Média: {media:.2f} | Desvio Padrão: {std:.2f} | Consenso: {consenso:.1f}%\n"
+                
+                justs = df_item[df_item['justification'].str.strip() != '']['justification'].tolist()
+                if justs:
+                    prompt += f"  * Justificações qualitativas dos peritos: {'; '.join([f'\"{j}\"' for j in justs])}\n"
+                    
+    prompt += "\n--- INSTRUÇÕES PARA A TESE / ANÁLISE ---\n"
+    prompt += "Com base nestes dados estruturados, elabore um texto académico formal para a secção de 'Discussão e Análise de Resultados' de uma tese de mestrado/doutoramento, estruturando a resposta em:\n"
+    prompt += "1. Introdução geral à adesão do painel de peritos.\n"
+    prompt += "2. Análise detalhada das afirmações que obtiveram consenso precoce (Ronda 1).\n"
+    prompt += "3. Avaliação da dinâmica de convergência e evolução nas rondas seguintes.\n"
+    prompt += "4. Integração crítica das justificações qualitativas dos peritos para explicar o posicionamento do grupo.\n"
+    prompt += "5. Conclusões e contributos práticos para os cuidados de enfermagem."
+    
+    return prompt
+
 def get_db_connection():
     conn = sqlite3.connect("delphi_data.db")
     conn.execute('CREATE TABLE IF NOT EXISTS respostas (expert_id TEXT, round_num INTEGER, statement_id INTEGER, score INTEGER, justification TEXT, PRIMARY KEY (expert_id, round_num, statement_id))')
@@ -251,18 +299,26 @@ else:
         with tab1:
             st.subheader("Matriz Estatística por Ronda")
             
-            # --- BOTÃO DE RELATÓRIO GLOBAL PDF PARA O INVESTIGADOR ---
             df_all_rep = pd.read_sql_query("SELECT * FROM respostas", conn)
             df_users_rep = pd.read_sql_query("SELECT * FROM utilizadores", conn)
             df_af_rep = pd.read_sql_query("SELECT * FROM afirmacoes", conn)
             
-            pdf_global_bytes = generate_admin_report_pdf(df_all_rep, df_users_rep, df_af_rep, escala_max)
-            st.download_button(
-                label="📄 Baixar Relatório Global do Estudo (PDF)",
-                data=pdf_global_bytes,
-                file_name="relatorio_global_estudo_delphi.pdf",
-                mime="application/pdf"
-            )
+            col_b1, col_b2 = st.columns(2)
+            with col_b1:
+                pdf_global_bytes = generate_admin_report_pdf(df_all_rep, df_users_rep, df_af_rep, escala_max)
+                st.download_button(
+                    label="📄 Baixar Relatório Global do Estudo (PDF)",
+                    data=pdf_global_bytes,
+                    file_name="relatorio_global_estudo_delphi.pdf",
+                    mime="application/pdf"
+                )
+            st.divider()
+
+            # --- ASSISTENTE DE ANÁLISE CIENTÍFICA (IA) ---
+            with st.expander("🤖 Assistente de Análise Científica para Tese (Copiar para IA)", expanded=False):
+                st.markdown("Copie o texto estruturado abaixo e cole-o no **ChatGPT** ou **Gemini** para obter uma interpretação crítica automática dos seus dados.")
+                prompt_ia = generate_ai_analysis_prompt(conn, escala_max)
+                st.text_area("Prompt Académico Pronto a Copiar:", value=prompt_ia, height=250)
             st.divider()
 
             df_all = df_all_rep
