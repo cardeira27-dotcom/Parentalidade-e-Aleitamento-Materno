@@ -8,8 +8,7 @@ import secrets
 
 st.set_page_config(page_title="Painel Delphi - Enfermagem", layout="wide")
 
-# Hash seguro para a password de administrador ("investigador2026")
-ADMIN_HASH = "8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918"
+ADMIN_CODE = "investigador2026"
 
 def hash_password(password):
     salt = secrets.token_hex(16)
@@ -134,8 +133,7 @@ def generate_ai_analysis_prompt(conn, escala_max):
     return prompt
 
 def get_db_connection():
-    # Base de dados atualizada para limpar conflitos anteriores
-    conn = sqlite3.connect("delphi_v2.db")
+    conn = sqlite3.connect("delphi_v3.db")
     conn.execute('CREATE TABLE IF NOT EXISTS respostas (expert_id TEXT, round_num INTEGER, statement_id INTEGER, score INTEGER, justification TEXT, PRIMARY KEY (expert_id, round_num, statement_id))')
     conn.execute('CREATE TABLE IF NOT EXISTS utilizadores (expert_id TEXT PRIMARY KEY, password TEXT)')
     conn.execute('CREATE TABLE IF NOT EXISTS afirmacoes (id INTEGER PRIMARY KEY AUTOINCREMENT, texto TEXT)')
@@ -152,7 +150,6 @@ def get_db_connection():
     if c.fetchone()[0] == 0: c.execute("INSERT INTO configuracoes VALUES ('regra_justificacao', 'Extremos (1 e Max)')")
     conn.commit()
 
-    # Iniciar Utilizadores Base com Passwords Seguras (Hashes)
     c.execute("SELECT COUNT(*) FROM utilizadores")
     if c.fetchone()[0] == 0:
         utilizadores_base = [
@@ -210,7 +207,7 @@ if not st.session_state.logged_in:
     st.title("Login - Estudo Delphi")
     u, c = st.text_input("ID de Perito"), st.text_input("Código de Acesso", type="password")
     if st.button("Entrar"):
-        if u == "admin" and hashlib.sha256(c.encode()).hexdigest() == ADMIN_HASH:
+        if u == "admin" and c == ADMIN_CODE:
             st.session_state.logged_in = True; st.session_state.user = "ADMIN"; st.rerun()
         else:
             conn = get_db_connection()
