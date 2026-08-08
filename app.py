@@ -9,7 +9,7 @@ import secrets
 st.set_page_config(page_title="Painel Delphi - Enfermagem", layout="wide")
 
 # Hash seguro para a password de administrador ("investigador2026")
-ADMIN_HASH = "8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918" # corresponde a "investigador2026"
+ADMIN_HASH = "8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918"
 
 def hash_password(password):
     salt = secrets.token_hex(16)
@@ -18,7 +18,6 @@ def hash_password(password):
 
 def verify_password(stored_password, provided_password, conn=None, user_id=None):
     if '$' not in stored_password:
-        # Suporte retroativo para texto simples (atualiza automaticamente para hash no login)
         if stored_password == provided_password:
             if conn and user_id:
                 new_hash = hash_password(provided_password)
@@ -135,7 +134,8 @@ def generate_ai_analysis_prompt(conn, escala_max):
     return prompt
 
 def get_db_connection():
-    conn = sqlite3.connect("delphi_data.db")
+    # Base de dados atualizada para limpar conflitos anteriores
+    conn = sqlite3.connect("delphi_v2.db")
     conn.execute('CREATE TABLE IF NOT EXISTS respostas (expert_id TEXT, round_num INTEGER, statement_id INTEGER, score INTEGER, justification TEXT, PRIMARY KEY (expert_id, round_num, statement_id))')
     conn.execute('CREATE TABLE IF NOT EXISTS utilizadores (expert_id TEXT PRIMARY KEY, password TEXT)')
     conn.execute('CREATE TABLE IF NOT EXISTS afirmacoes (id INTEGER PRIMARY KEY AUTOINCREMENT, texto TEXT)')
@@ -462,7 +462,7 @@ else:
                         conn.execute("UPDATE configuracoes SET valor=? WHERE chave='escala_max'", (str(nova_escala),)); conn.commit(); st.success("Atualizada!"); st.rerun()
             with c2:
                 with st.form("form_rondas"):
-                    st.markdown("**Total de Rondas**")
+                    st.markdown("Total de Rondas")
                     novas_rondas = st.number_input("Nº de Rondas", min_value=1, max_value=5, value=max_rondas)
                     if st.form_submit_button("Atualizar Rondas"):
                         conn.execute("UPDATE configuracoes SET valor=? WHERE chave='max_rondas'", (str(novas_rondas),)); conn.commit(); st.success("Atualizadas!"); st.rerun()
