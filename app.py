@@ -5,6 +5,7 @@ from fpdf import FPDF
 import io
 import hashlib
 import secrets
+import datetime
 
 st.set_page_config(page_title="Painel Delphi - Enfermagem", layout="wide")
 
@@ -31,14 +32,16 @@ def verify_password(stored_password, provided_password, conn=None, user_id=None)
     verify_hash = hashlib.pbkdf2_hmac('sha256', provided_password.encode('utf-8'), salt.encode('utf-8'), 100000).hex()
     return verify_hash == pwd_hash
 
-def generate_pdf(expert_id, round_num, respostas):
+def generate_pdf(expert_id, round_num, respostas, duration_seconds=0):
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", 'B', 16)
     pdf.cell(0, 10, txt=f"Relatorio de Respostas - Ronda {round_num}", ln=True, align='C')
     pdf.set_font("Arial", size=12)
     pdf.cell(0, 10, txt=f"Perito: {expert_id}", ln=True)
-    pdf.ln(10)
+    mins, secs = divmod(duration_seconds, 60)
+    pdf.cell(0, 8, txt=f"Tempo gasto na ronda: {mins}m {secs}s", ln=True)
+    pdf.ln(5)
     for idx, dados in respostas.items():
         pdf.set_font("Arial", 'B', 10)
         pdf.multi_cell(0, 8, txt=f"Afirmacao ID {idx}: Nota {dados['score']}")
@@ -47,7 +50,7 @@ def generate_pdf(expert_id, round_num, respostas):
         pdf.ln(3)
     return pdf.output(dest='S').encode('latin-1')
 
-def generate_admin_report_pdf(df_respostas, df_users, df_afirmacoes, escala_max):
+def generate_admin_report_pdf(df_respostas, df_users, df_afirmacoes, escala_max, df_tempos):
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", 'B', 16)
@@ -78,6 +81,14 @@ def generate_admin_report_pdf(df_respostas, df_users, df_afirmacoes, escala_max)
                     media = notas.mean()
                     cons = (notas >= limiar_consenso).mean() * 100
                     pdf.multi_cell(0, 6, txt=f"Afirmacao ID {idx}: Media = {media:.2f} | Indice Consenso = {cons:.1f}%")
+            
+            if not df_tempos.empty:
+                df_t_r = df_tempos[df_tempos['round_num'] == r]
+                if not df_t_r.empty:
+                    media_tempo = df_t_r['duration_seconds'].mean()
+                    mm, ss = divmod(int(media_tempo), 60)
+                    pdf.ln(2)
+                    pdf.cell(0, 6, txt=f"Tempo medio de resposta na Ronda {r}: {mm}m {ss}s", ln=True)
     else:
         pdf.set_font("Arial", size=10)
         pdf.cell(0, 10, txt="Ainda nao existem respostas registadas no sistema.", ln=True)
@@ -88,6 +99,7 @@ def generate_ai_analysis_prompt(conn, escala_max):
     df_res = pd.read_sql_query("SELECT * FROM respostas", conn)
     df_users = pd.read_sql_query("SELECT * FROM utilizadores", conn)
     df_af = pd.read_sql_query("SELECT * FROM afirmacoes", conn)
+    df_tempos = pd.read_sql_query("SELECT * FROM tempos_ronda", conn)
     
     if df_res.empty:
         return "Ainda não existem dados de respostas suficientes para gerar a análise para a IA."
@@ -98,8 +110,14 @@ def generate_ai_analysis_prompt(conn, escala_max):
     prompt += f"- Escala de Likert utilizada: 1 a {escala_max}\n"
     prompt += "- Limiar de Consenso definido: >= 80% das respostas nos valores mais altos da escala.\n\n"
     
-    prompt += "--- DADOS QUANTITATIVOS E QUALITATIVOS POR RONDA ---\n"
+    prompt += "--- TEMPOS MÉDIOS DE RESPOSTA ---\n"
+    if not df_tempos.empty:
+        for r in sorted(df_tempos['round_num'].unique()):
+            media_s = df_tempos[df_tempos['round_num'] == r]['duration_seconds'].mean()
+            mm, ss = divmod(int(media_s), 60)
+            prompt += f"- Ronda {r}: Tempo médio de resposta = {mm} minutos e {ss} segundos.\n"
     
+    prompt += "\n--- DADOS QUANTITATIVOS E QUALITATIVOS POR RONDA ---\n"
     todas_rondas = sorted(df_res['round_num'].unique())
     for r in todas_rondas:
         prompt += f"\n### RONDA {r}\n"
@@ -124,7 +142,7 @@ def generate_ai_analysis_prompt(conn, escala_max):
                     
     prompt += "\n--- INSTRUÇÕES PARA A TESE / ANÁLISE ---\n"
     prompt += "Com base nestes dados estruturados, elabore um texto académico formal para a secção de 'Discussão e Análise de Resultados' de uma tese de mestrado/doutoramento, estruturando a resposta em:\n"
-    prompt += "1. Introdução geral à adesão do painel de peritos.\n"
+    prompt += "1. Introdução geral à adesão do painel de peritos e análise dos tempos de resposta.\n"
     prompt += "2. Análise detalhada das afirmações que obtiveram consenso precoce (Ronda 1).\n"
     prompt += "3. Avaliação da dinâmica de convergência e evolução nas rondas seguintes.\n"
     prompt += "4. Integração crítica das justificações qualitativas dos peritos para explicar o posicionamento do grupo.\n"
@@ -133,11 +151,12 @@ def generate_ai_analysis_prompt(conn, escala_max):
     return prompt
 
 def get_db_connection():
-    conn = sqlite3.connect("delphi_v4.db")
+    conn = sqlite3.connect("delphi_v5.db")
     conn.execute('CREATE TABLE IF NOT EXISTS respostas (expert_id TEXT, round_num INTEGER, statement_id INTEGER, score INTEGER, justification TEXT, PRIMARY KEY (expert_id, round_num, statement_id))')
     conn.execute('CREATE TABLE IF NOT EXISTS utilizadores (expert_id TEXT PRIMARY KEY, password TEXT, must_change INTEGER DEFAULT 1)')
     conn.execute('CREATE TABLE IF NOT EXISTS afirmacoes (id INTEGER PRIMARY KEY AUTOINCREMENT, texto TEXT)')
     conn.execute('CREATE TABLE IF NOT EXISTS configuracoes (chave TEXT PRIMARY KEY, valor TEXT)')
+    conn.execute('CREATE TABLE IF NOT EXISTS tempos_ronda (expert_id TEXT, round_num INTEGER, start_time TEXT, duration_seconds INTEGER, PRIMARY KEY (expert_id, round_num))')
     
     c = conn.cursor()
     c.execute("SELECT COUNT(*) FROM configuracoes WHERE chave='escala_max'")
@@ -148,6 +167,9 @@ def get_db_connection():
     
     c.execute("SELECT COUNT(*) FROM configuracoes WHERE chave='regra_justificacao'")
     if c.fetchone()[0] == 0: c.execute("INSERT INTO configuracoes VALUES ('regra_justificacao', 'Extremos (1 e Max)')")
+
+    c.execute("SELECT COUNT(*) FROM configuracoes WHERE chave='ronda_ativa'")
+    if c.fetchone()[0] == 0: c.execute("INSERT INTO configuracoes VALUES ('ronda_ativa', '1')")
     conn.commit()
 
     c.execute("SELECT COUNT(*) FROM utilizadores")
@@ -203,8 +225,8 @@ def verificar_obrigatoriedade(score, escala_max, regra):
 if 'logged_in' not in st.session_state: st.session_state.logged_in = False
 if 'submetido_sucesso' not in st.session_state: st.session_state.submetido_sucesso = False
 if 'forcing_password_change' not in st.session_state: st.session_state.forcing_password_change = False
+if 'submitted_round' not in st.session_state: st.session_state.submitted_round = 1
 
-# Ecrã de alteração obrigatória de palavra-passe no primeiro acesso
 if st.session_state.forcing_password_change:
     st.title("Primeiro Acesso - Alteração de Palavra-Passe")
     st.info("Por razões de segurança, é obrigatório alterar a sua palavra-passe provisória antes de aceder ao estudo.")
@@ -240,7 +262,6 @@ if not st.session_state.logged_in:
             
             if row and verify_password(row[0], c, conn, u):
                 if row[1] == 1:
-                    # Obrigar a alterar password no primeiro acesso
                     st.session_state.pending_user = u
                     st.session_state.forcing_password_change = True
                     conn.close()
@@ -256,27 +277,57 @@ else:
         expert_id = st.session_state.user
         st.sidebar.title(f"Perito: {expert_id}")
         if st.sidebar.button("Logout"): 
-            st.session_state.logged_in = False; st.session_state.submetido_sucesso = False; st.rerun()
+            st.session_state.logged_in = False
+            st.session_state.submetido_sucesso = False
+            st.session_state.submitted_round = 1
+            st.rerun()
         
         conn = get_db_connection()
         df_all = pd.read_sql_query("SELECT * FROM respostas", conn)
         df_af = pd.read_sql_query("SELECT * FROM afirmacoes ORDER BY id", conn)
         escala_max = int(conn.execute("SELECT valor FROM configuracoes WHERE chave='escala_max'").fetchone()[0])
         max_rondas = int(conn.execute("SELECT valor FROM configuracoes WHERE chave='max_rondas'").fetchone()[0])
+        ronda_ativa = int(conn.execute("SELECT valor FROM configuracoes WHERE chave='ronda_ativa'").fetchone()[0])
         regra_just = conn.execute("SELECT valor FROM configuracoes WHERE chave='regra_justificacao'").fetchone()[0]
         escala_lista = list(range(1, escala_max + 1))
         
-        rondas_feitas = df_all[df_all['expert_id'] == expert_id]['round_num'].max()
-        round_num = 1 if pd.isna(rondas_feitas) else int(rondas_feitas) + 1
+        rondas_feitas = df_all[df_all['expert_id'] == expert_id]['round_num'].unique()
+        
+        # Determinar qual ronda o perito deve responder
+        round_num = 1
+        while round_num <= max_rondas:
+            if round_num not in rondas_feitas:
+                break
+            round_num += 1
             
         if round_num > max_rondas:
             st.success("🎉 Já concluiu todas as rondas previstas para este estudo. Muito obrigado!")
+        elif round_num > ronda_ativa:
+            st.info(f"⏳ Já concluiu as rondas disponíveis. A **Ronda {round_num}** ainda se encontra fechada pelo investigador. Por favor, aguarde que seja dada a ordem para avançar.")
         else:
             st.header(f"Ronda {round_num}")
             if st.session_state.submetido_sucesso:
-                st.success(f"Ronda {round_num} submetida com sucesso!")
-                st.download_button(f"Baixar comprovativo em PDF", data=st.session_state.pdf_bytes, file_name=f"ronda_{round_num}_{expert_id}.pdf")
+                r_msg = st.session_state.submitted_round
+                st.success(f"Ronda {r_msg} submetida com sucesso!")
+                st.download_button(f"Baixar comprovativo em PDF", data=st.session_state.pdf_bytes, file_name=f"ronda_{r_msg}_{expert_id}.pdf")
             else:
+                # Gestão do tempo do perito
+                cursor = conn.cursor()
+                cursor.execute("SELECT start_time FROM tempos_ronda WHERE expert_id=? AND round_num=?", (expert_id, round_num))
+                row_tempo = cursor.fetchone()
+                now_str = datetime.datetime.now().isoformat()
+                if not row_tempo:
+                    conn.execute("INSERT INTO tempos_ronda (expert_id, round_num, start_time, duration_seconds) VALUES (?, ?, ?, 0)", (expert_id, round_num, now_str))
+                    conn.commit()
+                    start_dt = datetime.datetime.now()
+                else:
+                    start_dt = datetime.datetime.fromisoformat(row_tempo[0])
+                    
+                elapsed = datetime.datetime.now() - start_dt
+                mins, secs = divmod(int(elapsed.total_seconds()), 60)
+                st.metric(label="⏱️ Tempo decorrido nesta ronda", value=f"{mins} min {secs} seg")
+                st.divider()
+
                 if round_num == 1:
                     st.info(f"Classifique de 1 a {escala_max}. Regra de justificação: **{regra_just}**.")
                     with st.form("form_r1"):
@@ -295,10 +346,15 @@ else:
                             if any(d['obr'] and not d['just'].strip() for d in respostas.values()):
                                 st.error("Atenção: Existem respostas que exigem justificação obrigatória segundo a regra configurada.")
                             else:
+                                end_dt = datetime.datetime.now()
+                                duration = int((end_dt - start_dt).total_seconds())
+                                conn.execute("UPDATE tempos_ronda SET duration_seconds = ? WHERE expert_id = ? AND round_num = ?", (duration, expert_id, 1))
+                                
                                 for idx, d in respostas.items():
                                     conn.execute('INSERT OR REPLACE INTO respostas VALUES (?, ?, ?, ?, ?)', (expert_id, 1, idx, d['score'], d['just']))
                                 conn.commit()
-                                st.session_state.pdf_bytes = generate_pdf(expert_id, 1, respostas)
+                                st.session_state.submitted_round = 1
+                                st.session_state.pdf_bytes = generate_pdf(expert_id, 1, respostas, duration)
                                 st.session_state.submetido_sucesso = True
                                 st.rerun()
                 
@@ -342,10 +398,15 @@ else:
                                 if any(d['obr'] and not d['just'].strip() for d in respostas_rn.values()):
                                     st.error("Atenção: Existem respostas que exigem justificação obrigatória segundo a regra configurada.")
                                 else:
+                                    end_dt = datetime.datetime.now()
+                                    duration = int((end_dt - start_dt).total_seconds())
+                                    conn.execute("UPDATE tempos_ronda SET duration_seconds = ? WHERE expert_id = ? AND round_num = ?", (duration, expert_id, round_num))
+                                    
                                     for idx, d in respostas_rn.items():
                                         conn.execute('INSERT OR REPLACE INTO respostas VALUES (?, ?, ?, ?, ?)', (expert_id, round_num, idx, d['score'], d['just']))
                                     conn.commit()
-                                    st.session_state.pdf_bytes = generate_pdf(expert_id, round_num, respostas_rn)
+                                    st.session_state.submitted_round = round_num
+                                    st.session_state.pdf_bytes = generate_pdf(expert_id, round_num, respostas_rn, duration)
                                     st.session_state.submetido_sucesso = True
                                     st.rerun()
         conn.close()
@@ -357,6 +418,7 @@ else:
         conn = get_db_connection()
         escala_max = int(conn.execute("SELECT valor FROM configuracoes WHERE chave='escala_max'").fetchone()[0])
         max_rondas = int(conn.execute("SELECT valor FROM configuracoes WHERE chave='max_rondas'").fetchone()[0])
+        ronda_ativa = int(conn.execute("SELECT valor FROM configuracoes WHERE chave='ronda_ativa'").fetchone()[0])
         regra_just = conn.execute("SELECT valor FROM configuracoes WHERE chave='regra_justificacao'").fetchone()[0]
         
         with tab1:
@@ -365,16 +427,28 @@ else:
             df_all_rep = pd.read_sql_query("SELECT * FROM respostas", conn)
             df_users_rep = pd.read_sql_query("SELECT * FROM utilizadores", conn)
             df_af_rep = pd.read_sql_query("SELECT * FROM afirmacoes", conn)
+            df_tempos_rep = pd.read_sql_query("SELECT * FROM tempos_ronda", conn)
             
             col_b1, col_b2 = st.columns(2)
             with col_b1:
-                pdf_global_bytes = generate_admin_report_pdf(df_all_rep, df_users_rep, df_af_rep, escala_max)
+                pdf_global_bytes = generate_admin_report_pdf(df_all_rep, df_users_rep, df_af_rep, escala_max, df_tempos_rep)
                 st.download_button(
                     label="📄 Baixar Relatório Global do Estudo (PDF)",
                     data=pdf_global_bytes,
                     file_name="relatorio_global_estudo_delphi.pdf",
                     mime="application/pdf"
                 )
+            st.divider()
+
+            # Secção com os tempos médios por ronda
+            st.subheader("⏱️ Tempos Médios de Resposta por Ronda")
+            if not df_tempos_rep.empty:
+                t_resumo = df_tempos_rep.groupby('round_num')['duration_seconds'].mean().reset_index()
+                t_resumo['Tempo Médio'] = t_resumo['duration_seconds'].apply(lambda x: f"{int(x//60)} min {int(x%60)} seg")
+                t_resumo.columns = ['Ronda', 'Segundos Médios', 'Tempo Médio Formatado']
+                st.dataframe(t_resumo[['Ronda', 'Tempo Médio Formatado']], hide_index=True, use_container_width=True)
+            else:
+                st.info("Ainda não existem registos de tempos.")
             st.divider()
 
             with st.expander("🤖 Assistente de Análise Científica para Tese (Copiar para IA)", expanded=False):
@@ -433,9 +507,13 @@ else:
                         st.line_chart(df_graf.pivot(index='Ronda', columns='Afirmação', values='Consenso (%)'))
 
         with tab2:
-            st.subheader("Registo Bruto de Dados")
+            st.subheader("Registo Bruto de Respostas e Tempos")
             df_all = pd.read_sql_query("SELECT * FROM respostas", conn)
+            df_t = pd.read_sql_query("SELECT * FROM tempos_ronda", conn)
+            st.markdown("**Respostas:**")
             st.dataframe(df_all, use_container_width=True)
+            st.markdown("**Tempos de Resposta por Perito:**")
+            st.dataframe(df_t, use_container_width=True)
             if not df_all.empty:
                 st.download_button("Exportar Excel (Dados Brutos)", data=df_all.to_csv(index=False).encode('utf-8'), file_name='dados_estudo_brutos.csv', mime='text/csv')
                 
@@ -480,8 +558,21 @@ else:
                     conn.execute("DELETE FROM afirmacoes WHERE id=?", (del_af_id,)); conn.commit(); st.success("Apagada!"); st.rerun()
 
         with tab5:
-            st.subheader("Configurações do Estudo")
+            st.subheader("Configurações e Controlo de Rondas")
             
+            # --- CONTROLO DA RONDA ATIVA ---
+            st.markdown("### Controlo do Fluxo de Rondas")
+            st.info(f"O estudo encontra-se atualmente a decorrer na **Ronda {ronda_ativa}** (de um total de {max_rondas} rondas configuradas).")
+            if ronda_ativa < max_rondas:
+                if st.button("🚀 Dar ordem para avançar para a Ronda Seguinte"):
+                    conn.execute("UPDATE configuracoes SET valor=? WHERE chave='ronda_ativa'", (str(ronda_ativa + 1),))
+                    conn.commit()
+                    st.success(f"Estudo avançado com sucesso para a Ronda {ronda_ativa + 1}!")
+                    st.rerun()
+            else:
+                st.warning("O estudo já atingiu o número máximo de rondas configurado.")
+            st.divider()
+
             c1, c2, c3 = st.columns(3)
             with c1:
                 with st.form("form_escala"):
