@@ -3,10 +3,35 @@ import sqlite3
 import pandas as pd
 from fpdf import FPDF
 import io
+import hashlib
+import secrets
 
 st.set_page_config(page_title="Painel Delphi - Enfermagem", layout="wide")
 
-ADMIN_CODE = "investigador2026"
+# Hash seguro para a password de administrador ("investigador2026")
+ADMIN_HASH = "8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918" # corresponde a "investigador2026"
+
+def hash_password(password):
+    salt = secrets.token_hex(16)
+    pwd_hash = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt.encode('utf-8'), 100000).hex()
+    return f"{salt}${pwd_hash}"
+
+def verify_password(stored_password, provided_password, conn=None, user_id=None):
+    if '$' not in stored_password:
+        # Suporte retroativo para texto simples (atualiza automaticamente para hash no login)
+        if stored_password == provided_password:
+            if conn and user_id:
+                new_hash = hash_password(provided_password)
+                conn.execute("UPDATE utilizadores SET password = ? WHERE expert_id = ?", (new_hash, user_id))
+                conn.commit()
+            return True
+        return False
+    
+    parts = stored_password.split('$')
+    if len(parts) != 2: return False
+    salt, pwd_hash = parts
+    verify_hash = hashlib.pbkdf2_hmac('sha256', provided_password.encode('utf-8'), salt.encode('utf-8'), 100000).hex()
+    return verify_hash == pwd_hash
 
 def generate_pdf(expert_id, round_num, respostas):
     pdf = FPDF()
@@ -127,9 +152,15 @@ def get_db_connection():
     if c.fetchone()[0] == 0: c.execute("INSERT INTO configuracoes VALUES ('regra_justificacao', 'Extremos (1 e Max)')")
     conn.commit()
 
+    # Iniciar Utilizadores Base com Passwords Seguras (Hashes)
     c.execute("SELECT COUNT(*) FROM utilizadores")
     if c.fetchone()[0] == 0:
-        utilizadores_base = [("P01", "codigo123"), ("P02", "codigo456"), ("P03", "codigo789"), ("P04", "codigo000"), ("P05", "codigo111"), ("P06", "codigo222"), ("P07", "teste123")]
+        utilizadores_base = [
+            ("P01", hash_password("codigo123")), ("P02", hash_password("codigo456")), 
+            ("P03", hash_password("codigo789")), ("P04", hash_password("codigo000")), 
+            ("P05", hash_password("codigo111")), ("P06", hash_password("codigo222")), 
+            ("P07", hash_password("teste123"))
+        ]
         c.executemany('INSERT INTO utilizadores VALUES (?, ?)', utilizadores_base)
         conn.commit()
 
@@ -179,15 +210,18 @@ if not st.session_state.logged_in:
     st.title("Login - Estudo Delphi")
     u, c = st.text_input("ID de Perito"), st.text_input("Código de Acesso", type="password")
     if st.button("Entrar"):
-        if u == "admin" and c == ADMIN_CODE:
+        if u == "admin" and hashlib.sha256(c.encode()).hexdigest() == ADMIN_HASH:
             st.session_state.logged_in = True; st.session_state.user = "ADMIN"; st.rerun()
         else:
             conn = get_db_connection()
             row = conn.execute("SELECT password FROM utilizadores WHERE expert_id = ?", (u,)).fetchone()
-            conn.close()
-            if row and row[0] == c:
+            
+            if row and verify_password(row[0], c, conn, u):
+                conn.close()
                 st.session_state.logged_in = True; st.session_state.user = u; st.session_state.submetido_sucesso = False; st.rerun()
-            else: st.error("Credenciais inválidas.")
+            else:
+                conn.close()
+                st.error("Credenciais inválidas.")
 else:
     if st.session_state.user != "ADMIN":
         expert_id = st.session_state.user
@@ -314,7 +348,6 @@ else:
                 )
             st.divider()
 
-            # --- ASSISTENTE DE ANÁLISE CIENTÍFICA (IA) ---
             with st.expander("🤖 Assistente de Análise Científica para Tese (Copiar para IA)", expanded=False):
                 st.markdown("Copie o texto estruturado abaixo e cole-o no **ChatGPT** ou **Gemini** para obter uma interpretação crítica automática dos seus dados.")
                 prompt_ia = generate_ai_analysis_prompt(conn, escala_max)
@@ -379,7 +412,7 @@ else:
                 
         with tab3:
             st.subheader("Utilizadores Registados")
-            df_users = pd.read_sql_query("SELECT expert_id as 'ID de Perito', password as 'Senha de Acesso' FROM utilizadores", conn)
+            df_users = pd.read_sql_query("SELECT expert_id as 'ID de Perito' FROM utilizadores", conn)
             st.dataframe(df_users, use_container_width=True)
             
             col1, col2 = st.columns(2)
@@ -390,7 +423,11 @@ else:
                     if st.form_submit_button("Adicionar Perito"):
                         if novo_id and nova_pass:
                             try:
-                                conn.execute("INSERT INTO utilizadores VALUES (?, ?)", (novo_id, nova_pass)); conn.commit(); st.success("Criado!"); st.rerun()
+                                hashed_nova_pass = hash_password(nova_pass)
+                                conn.execute("INSERT INTO utilizadores VALUES (?, ?)", (novo_id, hashed_nova_pass))
+                                conn.commit()
+                                st.success(f"Criado o utilizador {novo_id} com password encriptada!")
+                                st.rerun()
                             except: st.error("O ID já existe.")
             with col2:
                 with st.form("form_del_user"):
