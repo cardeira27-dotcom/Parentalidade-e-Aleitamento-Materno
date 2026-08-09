@@ -72,7 +72,7 @@ def generate_expert_report_pdf(expert_id, conn, specific_round=None):
             pdf.set_font("Arial", 'B', 10)
             pdf.multi_cell(0, 6, txt=safe_txt(f"Afirmacao ID {row['statement_id']}: {texto_af}"))
             pdf.set_font("Arial", size=10)
-            nota_str = row['score'] if row['score'] > 0 else 'Não relevante (Excluída)'
+            nota_str = row['score'] if row['score'] > 0 else 'Não relevante para si (Excluída)'
             pdf.multi_cell(0, 6, txt=safe_txt(f"Nota: {nota_str} | Just: {row['justification'] if row['justification'] else 'N/A'}"))
             pdf.ln(3)
         pdf.ln(5)
@@ -167,7 +167,7 @@ def get_db_connection():
     return conn
 
 def verificar_obrigatoriedade(score, escala_max, regra):
-    if score == 0: return False # Ignora obrigatoriedade se excluiu a pergunta
+    if score == 0: return False
     if regra == "Extremos (1 e Max)": return score == 1 or score == escala_max
     elif regra == "Sempre obrigatória": return True
     elif regra == "Apenas notas baixas (1)": return score == 1
@@ -341,10 +341,10 @@ else:
                                 voto_antigo = row_antigo['score'].values[0] if not row_antigo.empty else 1
                                 just_antiga = row_antigo['justification'].values[0] if not row_antigo.empty else ""
                                 
-                                # Se o perito escolheu "Não" na ronda anterior (guardado como 0), bloqueia
+                                # Se o perito escolheu "Não" na ronda anterior (guardado como 0), bloqueia com a mensagem correta
                                 if int(voto_antigo) == 0:
                                     st.markdown(f"### {texto_af}")
-                                    st.warning("🚫 Não relevante para os peritos.")
+                                    st.warning("🚫 Não relevante para si.")
                                     st.divider()
                                     respostas_rn[idx] = {"score": 0, "just": just_antiga, "obr": False}
                                     continue
@@ -362,9 +362,9 @@ else:
                                 quer_manter = "Sim"
                                 
                                 if is_media_neutra:
-                                    # index=None obriga a que inicie vazio, obrigando à seleção manual
+                                    # index=None inicia em branco. Se selecionar "Sim", não dá para responder. Se selecionar "Não", dá para responder.
                                     quer_manter = st.radio(
-                                        f"O grupo classificou esta afirmação como não relevante. Quer manter a resposta? (ID:{idx})", 
+                                        f"Classificou esta afirmação como não relevante. Quer manter a sua resposta anterior? (ID:{idx})", 
                                         ["Sim", "Não"], 
                                         key=f"qm_{idx}", 
                                         horizontal=True, 
@@ -372,21 +372,20 @@ else:
                                     )
                                 
                                 if quer_manter == "Sim":
+                                    st.info("🚫 Não relevante para si.")
+                                    respostas_rn[idx] = {"score": 0, "just": just_antiga, "obr": False}
+                                elif quer_manter == "Não":
                                     index_voto = int(voto_antigo) - 1 if int(voto_antigo) in escala_lista else 0
                                     s = st.radio(f"Novo voto (ID:{idx})", escala_lista, key=f"sr_{idx}", horizontal=True, index=index_voto)
                                     j = st.text_area(f"Nova justificação (ID:{idx})", value=just_antiga, key=f"jr_{idx}")
                                     obr = verificar_obrigatoriedade(s, escala_max, regra_just)
                                     respostas_rn[idx] = {"score": s, "just": j, "obr": obr}
-                                elif quer_manter == "Não":
-                                    st.info("🔒 A escala foi ocultada. A afirmação será excluída para si na próxima ronda.")
-                                    respostas_rn[idx] = {"score": 0, "just": just_antiga, "obr": False}
                                 else:
                                     st.warning("⚠️ Escolha 'Sim' ou 'Não' na pergunta acima para poder avançar.")
                                     respostas_rn[idx] = {"score": None, "just": "", "obr": False}
                                 st.divider()
                                 
                         if st.form_submit_button(f"Submeter Ronda {round_num}"):
-                            # Validação para impedir submissão sem preencher "Sim/Não"
                             if any(d['score'] is None for d in respostas_rn.values()):
                                 st.error("Atenção: Tem de escolher 'Sim' ou 'Não' nas afirmações assinaladas a amarelo.")
                             elif any(d['obr'] and not d['just'].strip() for d in respostas_rn.values()):
@@ -450,7 +449,6 @@ else:
                     df_r = df_all_rep[df_all_rep['round_num'] == r]
                     pivot = df_r.pivot(index='statement_id', columns='expert_id', values='score')
                     stats = pd.DataFrame(index=pivot.index)
-                    # Filtra scores > 0 para ignorar quem escolheu "Não relevante"
                     stats['Média'] = pivot[pivot > 0].mean(axis=1).round(2)
                     stats['Desv. Padrão'] = pivot[pivot > 0].std(axis=1).round(2)
                     stats['Índice Consenso (%)'] = pivot.apply(lambda row: calcular_consenso_percentual(row.dropna(), escala_max), axis=1).round(1)
