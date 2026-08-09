@@ -38,9 +38,11 @@ def safe_txt(txt):
 def calcular_consenso_percentual(notas, escala_max):
     notas = notas[notas > 0] # Ignorar valores de exclusão (0)
     if len(notas) == 0: return 0.0
+    ponto_neutro = (escala_max + 1) // 2
     cons_acc = (notas >= escala_max - 1).mean()
-    cons_rej = (notas <= 2).mean()
-    return max(cons_acc, cons_rej) * 100
+    cons_rej = (notas <= 2).mean() if escala_max > 3 else (notas == 1).mean()
+    cons_neut = (notas == ponto_neutro).mean()
+    return max(cons_acc, cons_rej, cons_neut) * 100
 
 def generate_expert_report_pdf(expert_id, conn, specific_round=None):
     pdf = FPDF()
@@ -112,7 +114,7 @@ def generate_ai_analysis_prompt(conn, escala_max):
     prompt += f"- Total de Peritos Participantes: {len(df_users)}\n"
     prompt += f"- Total de Afirmações Avaliadas: {len(df_af)}\n"
     prompt += f"- Escala de Likert utilizada: 1 a {escala_max}\n"
-    prompt += "- Limiar de Consenso definido: >= 80% das respostas nos valores mais altos ou mais baixos da escala.\n\n"
+    prompt += "- Limiar de Consenso definido: >= 80% das respostas nos valores mais altos, mais baixos ou neutros da escala.\n\n"
     
     prompt += "--- TEMPOS MÉDIOS DE RESPOSTA ---\n"
     if not df_tempos.empty:
@@ -154,7 +156,7 @@ def generate_ai_analysis_prompt(conn, escala_max):
     return prompt
 
 def get_db_connection():
-    conn = sqlite3.connect("delphi_v14.db")
+    conn = sqlite3.connect("delphi_v15.db")
     conn.execute('CREATE TABLE IF NOT EXISTS respostas (expert_id TEXT, round_num INTEGER, statement_id INTEGER, score INTEGER, justification TEXT, PRIMARY KEY (expert_id, round_num, statement_id))')
     conn.execute('CREATE TABLE IF NOT EXISTS utilizadores (expert_id TEXT PRIMARY KEY, password TEXT, must_change INTEGER DEFAULT 1)')
     conn.execute('CREATE TABLE IF NOT EXISTS afirmacoes (id INTEGER PRIMARY KEY AUTOINCREMENT, texto TEXT)')
@@ -341,7 +343,7 @@ else:
                                 voto_antigo = row_antigo['score'].values[0] if not row_antigo.empty else 1
                                 just_antiga = row_antigo['justification'].values[0] if not row_antigo.empty else ""
                                 
-                                # Se o perito escolheu "Não" na ronda anterior (guardado como 0), bloqueia com a mensagem correta
+                                # Se o perito escolheu "Sim" (manter anterior não relevante) na ronda anterior (guardado como 0)
                                 if int(voto_antigo) == 0:
                                     st.markdown(f"### {texto_af}")
                                     st.warning("🚫 Não relevante para si.")
@@ -359,10 +361,9 @@ else:
                                 st.markdown(f"👥 **Respostas dos restantes peritos:** `{outros_str}`")
                                 
                                 is_media_neutra = (media_grupo > 0 and round(media_grupo) == ponto_neutro)
-                                quer_manter = "Sim"
+                                quer_manter = "Não"
                                 
                                 if is_media_neutra:
-                                    # index=None inicia em branco. Se selecionar "Sim", não dá para responder. Se selecionar "Não", dá para responder.
                                     quer_manter = st.radio(
                                         f"Classificou esta afirmação como não relevante. Quer manter a sua resposta anterior? (ID:{idx})", 
                                         ["Sim", "Não"], 
@@ -371,18 +372,19 @@ else:
                                         index=None
                                     )
                                 
-                                if quer_manter == "Sim":
+                                if is_media_neutra and quer_manter is None:
+                                    st.warning("⚠️ Escolha 'Sim' ou 'Não' na pergunta acima para poder avançar.")
+                                    respostas_rn[idx] = {"score": None, "just": "", "obr": False}
+                                elif is_media_neutra and quer_manter == "Sim":
                                     st.info("🚫 Não relevante para si.")
                                     respostas_rn[idx] = {"score": 0, "just": just_antiga, "obr": False}
-                                elif quer_manter == "Não":
-                                    index_voto = int(voto_antigo) - 1 if int(voto_antigo) in escala_lista else 0
+                                else:
+                                    # Se selecionou "Não" ou se a média não era neutra
+                                    index_voto = int(voto_antigo) - 1 if (voto_antigo > 0 and int(voto_antigo) in escala_lista) else (ponto_neutro - 1)
                                     s = st.radio(f"Novo voto (ID:{idx})", escala_lista, key=f"sr_{idx}", horizontal=True, index=index_voto)
                                     j = st.text_area(f"Nova justificação (ID:{idx})", value=just_antiga, key=f"jr_{idx}")
                                     obr = verificar_obrigatoriedade(s, escala_max, regra_just)
                                     respostas_rn[idx] = {"score": s, "just": j, "obr": obr}
-                                else:
-                                    st.warning("⚠️ Escolha 'Sim' ou 'Não' na pergunta acima para poder avançar.")
-                                    respostas_rn[idx] = {"score": None, "just": "", "obr": False}
                                 st.divider()
                                 
                         if st.form_submit_button(f"Submeter Ronda {round_num}"):
@@ -423,6 +425,21 @@ else:
             with col_b1:
                 pdf_global_bytes = generate_admin_report_pdf(df_all_rep, df_users_rep, df_af_rep, escala_max, df_tempos_rep)
                 st.download_button("📄 Baixar Relatório Global do Estudo (PDF)", data=pdf_global_bytes, file_name="relatorio_global_estudo_delphi.pdf", mime="application/pdf")
+            with col_b2:
+                # Botão para exportar a totalidade de rondas e justificações de uma só vez em Excel/CSV
+                df_completo_export = pd.read_sql_query("""
+                    SELECT r.expert_id as 'ID Perito', r.round_num as 'Ronda', r.statement_id as 'ID Afirmação', 
+                           a.texto as 'Texto Afirmação', r.score as 'Nota', r.justification as 'Justificação' 
+                    FROM respostas r 
+                    JOIN afirmacoes a ON r.statement_id = a.id
+                """, conn)
+                if not df_completo_export.empty:
+                    st.download_button(
+                        "📥 Exportar Todas as Rondas e Justificações (Excel/CSV)",
+                        data=df_completo_export.to_csv(index=False).encode('utf-8'),
+                        file_name="estudo_delphi_todas_rondas_justificacoes.csv",
+                        mime="text/csv"
+                    )
             st.divider()
 
             st.subheader("⏱️ Tempos Médios de Resposta por Ronda")
@@ -457,6 +474,34 @@ else:
                     df_final.index = [f"Afirmação {i}" for i in df_final.index]
                     st.dataframe(df_final, use_container_width=True)
                     st.download_button(f"Exportar Matriz Ronda {r} (Excel/CSV)", data=df_final.to_csv(index_label="Afirmação").encode('utf-8'), file_name=f'matriz_estatistica_ronda_{r}.csv', mime='text/csv')
+                
+                # Restauração dos Gráficos Estatísticos
+                st.divider()
+                st.subheader("📈 Evolução Gráfica do Estudo")
+                dados_graficos = []
+                for r in sorted(df_all_rep['round_num'].unique()):
+                    df_r = df_all_rep[df_all_rep['round_num'] == r]
+                    for stmt in df_r['statement_id'].unique():
+                        notas = df_r[(df_r['statement_id'] == stmt) & (df_r['score'] > 0)]['score'].dropna()
+                        if len(notas) > 0:
+                            media = notas.mean()
+                            cons = calcular_consenso_percentual(notas, escala_max)
+                            dados_graficos.append({"Ronda": f"Ronda {r}", "Afirmação": f"Afirmação {stmt}", "Média": media, "Consenso (%)": cons})
+                
+                df_graf = pd.DataFrame(dados_graficos)
+                if not df_graf.empty:
+                    st.markdown("**1. Quantidade de Afirmações com Consenso Alcançado (≥80%) por Ronda**")
+                    cons_alcancado = df_graf[df_graf['Consenso (%)'] >= 80].groupby('Ronda').size()
+                    if not cons_alcancado.empty: st.bar_chart(cons_alcancado)
+                    else: st.info("Nenhuma afirmação atingiu 80% de consenso até ao momento.")
+                    
+                    colA, colB = st.columns(2)
+                    with colA:
+                        st.markdown("**2. Evolução da Média (por Afirmação)**")
+                        st.line_chart(df_graf.pivot(index='Ronda', columns='Afirmação', values='Média'))
+                    with colB:
+                        st.markdown("**3. Evolução do Índice de Consenso % (por Afirmação)**")
+                        st.line_chart(df_graf.pivot(index='Ronda', columns='Afirmação', values='Consenso (%)'))
 
         with tab2:
             st.subheader("Registo Bruto de Respostas e Tempos")
