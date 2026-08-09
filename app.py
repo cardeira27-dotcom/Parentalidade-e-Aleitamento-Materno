@@ -36,6 +36,7 @@ def safe_txt(txt):
     return str(txt).encode('latin-1', 'replace').decode('latin-1')
 
 def calcular_consenso_percentual(notas, escala_max):
+    notas = notas[notas > 0] # Ignorar valores de exclusão (0)
     if len(notas) == 0: return 0.0
     cons_acc = (notas >= escala_max - 1).mean()
     cons_rej = (notas <= 2).mean()
@@ -71,7 +72,8 @@ def generate_expert_report_pdf(expert_id, conn, specific_round=None):
             pdf.set_font("Arial", 'B', 10)
             pdf.multi_cell(0, 6, txt=safe_txt(f"Afirmacao ID {row['statement_id']}: {texto_af}"))
             pdf.set_font("Arial", size=10)
-            pdf.multi_cell(0, 6, txt=safe_txt(f"Nota: {row['score']} | Just: {row['justification'] if row['justification'] else 'N/A'}"))
+            nota_str = row['score'] if row['score'] > 0 else 'Não relevante (Excluída)'
+            pdf.multi_cell(0, 6, txt=safe_txt(f"Nota: {nota_str} | Just: {row['justification'] if row['justification'] else 'N/A'}"))
             pdf.ln(3)
         pdf.ln(5)
     return pdf.output(dest='S').encode('latin-1')
@@ -91,7 +93,7 @@ def generate_admin_report_pdf(df_respostas, df_users, df_afirmacoes, escala_max,
             df_r = df_respostas[df_respostas['round_num'] == r]
             pivot = df_r.pivot(index='statement_id', columns='expert_id', values='score')
             for idx, row in pivot.iterrows():
-                notas = row.dropna()
+                notas = row[row > 0].dropna()
                 if len(notas) > 0:
                     cons = calcular_consenso_percentual(notas, escala_max)
                     pdf.multi_cell(0, 6, txt=safe_txt(f"Afirmacao {idx}: Media={notas.mean():.2f} | Consenso={cons:.1f}%"))
@@ -129,7 +131,7 @@ def generate_ai_analysis_prompt(conn, escala_max):
             texto_af = af_row['texto']
             df_item = df_r[df_r['statement_id'] == stmt_id]
             if not df_item.empty:
-                scores = df_item['score'].dropna()
+                scores = df_item[df_item['score'] > 0]['score'].dropna()
                 media = scores.mean() if len(scores) > 0 else 0
                 std = scores.std() if len(scores) > 1 else 0
                 consenso = calcular_consenso_percentual(scores, escala_max)
@@ -152,7 +154,7 @@ def generate_ai_analysis_prompt(conn, escala_max):
     return prompt
 
 def get_db_connection():
-    conn = sqlite3.connect("delphi_v12.db")
+    conn = sqlite3.connect("delphi_v14.db")
     conn.execute('CREATE TABLE IF NOT EXISTS respostas (expert_id TEXT, round_num INTEGER, statement_id INTEGER, score INTEGER, justification TEXT, PRIMARY KEY (expert_id, round_num, statement_id))')
     conn.execute('CREATE TABLE IF NOT EXISTS utilizadores (expert_id TEXT PRIMARY KEY, password TEXT, must_change INTEGER DEFAULT 1)')
     conn.execute('CREATE TABLE IF NOT EXISTS afirmacoes (id INTEGER PRIMARY KEY AUTOINCREMENT, texto TEXT)')
@@ -165,6 +167,7 @@ def get_db_connection():
     return conn
 
 def verificar_obrigatoriedade(score, escala_max, regra):
+    if score == 0: return False # Ignora obrigatoriedade se excluiu a pergunta
     if regra == "Extremos (1 e Max)": return score == 1 or score == escala_max
     elif regra == "Sempre obrigatória": return True
     elif regra == "Apenas notas baixas (1)": return score == 1
@@ -205,7 +208,10 @@ else:
     if st.session_state.user != "ADMIN":
         expert_id = st.session_state.user
         st.sidebar.title(f"Perito: {expert_id}")
-        if st.sidebar.button("Logout"): st.session_state.logged_in = False; st.rerun()
+        if st.sidebar.button("Logout"): 
+            st.session_state.logged_in = False
+            st.session_state.submetido_sucesso = False
+            st.rerun()
         
         conn = get_db_connection()
         escala_max = int(conn.execute("SELECT valor FROM configuracoes WHERE chave='escala_max'").fetchone()[0])
@@ -221,15 +227,30 @@ else:
             if round_num not in rondas_feitas: break
             round_num += 1
             
-        if round_num > max_rondas:
+        if st.session_state.submetido_sucesso:
+            st.success(f"A sua submissão da Ronda {st.session_state.submitted_round} foi guardada com sucesso!")
+            pdf_submissao = generate_expert_report_pdf(expert_id, conn, specific_round=st.session_state.submitted_round)
+            st.download_button("📄 Baixar comprovativo em PDF", data=pdf_submissao, file_name=f"ronda_{st.session_state.submitted_round}_{expert_id}.pdf", mime="application/pdf")
+            st.divider()
+            st.info("Pode continuar no sistema para verificar se a ronda seguinte já se encontra disponível.")
+            if st.button("Continuar ➡️"):
+                st.session_state.submetido_sucesso = False
+                st.rerun()
+
+        elif round_num > max_rondas:
             st.markdown("## 🎉 Muito obrigado pela sua participação.")
             st.info("Concluiu todas as rondas previstas para este estudo.")
             pdf_final = generate_expert_report_pdf(expert_id, conn)
             st.download_button("📄 Baixar Relatório Final (Todas as Rondas)", data=pdf_final, file_name=f"relatorio_final_{expert_id}.pdf", mime="application/pdf")
+        
         elif round_num > ronda_ativa:
-            st.info(f"⏳ Já concluiu as rondas disponíveis. A **Ronda {round_num}** ainda se encontra fechada pelo investigador.")
+            st.warning(f"⏳ Já concluiu as rondas disponíveis. A **Ronda {round_num}** ainda se encontra fechada pelo investigador.")
             pdf_anteriores = generate_expert_report_pdf(expert_id, conn)
             st.download_button("📄 Baixar Respostas Anteriores (PDF)", data=pdf_anteriores, file_name=f"respostas_anteriores_{expert_id}.pdf", mime="application/pdf")
+            st.divider()
+            if st.button("🔄 Verificar se a nova Ronda já abriu"):
+                st.rerun()
+                
         else:
             st.header(f"Ronda {round_num}")
             cursor = conn.cursor()
@@ -276,7 +297,8 @@ else:
                             for idx, d in respostas.items():
                                 conn.execute('INSERT OR REPLACE INTO respostas VALUES (?, ?, ?, ?, ?)', (expert_id, 1, idx, d['score'], d['just']))
                             conn.commit()
-                            st.success("Ronda 1 submetida com sucesso!")
+                            st.session_state.submitted_round = 1
+                            st.session_state.submetido_sucesso = True
                             st.rerun()
             else: 
                 df_all_r = pd.read_sql_query("SELECT * FROM respostas", conn)
@@ -287,7 +309,7 @@ else:
                 for idx in df_af['id'].tolist():
                     alcancou_consenso = False
                     for prev_r in range(1, round_num):
-                        scores_prev = df_all_r[(df_all_r['round_num'] == prev_r) & (df_all_r['statement_id'] == idx)]['score'].dropna()
+                        scores_prev = df_all_r[(df_all_r['round_num'] == prev_r) & (df_all_r['statement_id'] == idx) & (df_all_r['score'] > 0)]['score'].dropna()
                         if not scores_prev.empty:
                             if calcular_consenso_percentual(scores_prev, escala_max) >= 80.0:
                                 alcancou_consenso = True
@@ -319,19 +341,35 @@ else:
                                 voto_antigo = row_antigo['score'].values[0] if not row_antigo.empty else 1
                                 just_antiga = row_antigo['justification'].values[0] if not row_antigo.empty else ""
                                 
-                                scores_item_ant = df_ant[df_ant['statement_id'] == idx]['score'].dropna()
+                                # Se o perito escolheu "Não" na ronda anterior (guardado como 0), bloqueia
+                                if int(voto_antigo) == 0:
+                                    st.markdown(f"### {texto_af}")
+                                    st.warning("🚫 Não relevante para os peritos.")
+                                    st.divider()
+                                    respostas_rn[idx] = {"score": 0, "just": just_antiga, "obr": False}
+                                    continue
+                                
+                                scores_item_ant = df_ant[(df_ant['statement_id'] == idx) & (df_ant['score'] > 0)]['score'].dropna()
                                 media_grupo = scores_item_ant.mean() if not scores_item_ant.empty else 0.0
-                                outros_votos = df_ant[(df_ant['statement_id'] == idx) & (df_ant['expert_id'] != expert_id)]['score'].tolist()
+                                outros_votos = df_ant[(df_ant['statement_id'] == idx) & (df_ant['expert_id'] != expert_id) & (df_ant['score'] > 0)]['score'].tolist()
                                 outros_str = ", ".join(map(str, outros_votos)) if outros_votos else "Sem registos"
                                 
                                 st.markdown(f"### {texto_af}")
                                 st.markdown(f"👤 **O seu voto anterior:** `{voto_antigo}` | 👥 **Média do grupo:** `{media_grupo:.2f}`")
                                 st.markdown(f"👥 **Respostas dos restantes peritos:** `{outros_str}`")
                                 
-                                is_media_neutra = (round(media_grupo) == ponto_neutro)
+                                is_media_neutra = (media_grupo > 0 and round(media_grupo) == ponto_neutro)
                                 quer_manter = "Sim"
+                                
                                 if is_media_neutra:
-                                    quer_manter = st.radio(f"O grupo classificou esta afirmação como não relevante. Quer manter a resposta? (ID:{idx})", ["Sim", "Não"], key=f"qm_{idx}", horizontal=True)
+                                    # index=None obriga a que inicie vazio, obrigando à seleção manual
+                                    quer_manter = st.radio(
+                                        f"O grupo classificou esta afirmação como não relevante. Quer manter a resposta? (ID:{idx})", 
+                                        ["Sim", "Não"], 
+                                        key=f"qm_{idx}", 
+                                        horizontal=True, 
+                                        index=None
+                                    )
                                 
                                 if quer_manter == "Sim":
                                     index_voto = int(voto_antigo) - 1 if int(voto_antigo) in escala_lista else 0
@@ -339,13 +377,19 @@ else:
                                     j = st.text_area(f"Nova justificação (ID:{idx})", value=just_antiga, key=f"jr_{idx}")
                                     obr = verificar_obrigatoriedade(s, escala_max, regra_just)
                                     respostas_rn[idx] = {"score": s, "just": j, "obr": obr}
+                                elif quer_manter == "Não":
+                                    st.info("🔒 A escala foi ocultada. A afirmação será excluída para si na próxima ronda.")
+                                    respostas_rn[idx] = {"score": 0, "just": just_antiga, "obr": False}
                                 else:
-                                    st.info("🔒 Resposta anterior mantida (escala oculta).")
-                                    respostas_rn[idx] = {"score": int(voto_antigo), "just": just_antiga, "obr": False}
+                                    st.warning("⚠️ Escolha 'Sim' ou 'Não' na pergunta acima para poder avançar.")
+                                    respostas_rn[idx] = {"score": None, "just": "", "obr": False}
                                 st.divider()
                                 
                         if st.form_submit_button(f"Submeter Ronda {round_num}"):
-                            if any(d['obr'] and not d['just'].strip() for d in respostas_rn.values()):
+                            # Validação para impedir submissão sem preencher "Sim/Não"
+                            if any(d['score'] is None for d in respostas_rn.values()):
+                                st.error("Atenção: Tem de escolher 'Sim' ou 'Não' nas afirmações assinaladas a amarelo.")
+                            elif any(d['obr'] and not d['just'].strip() for d in respostas_rn.values()):
                                 st.error("Atenção: Existem respostas que exigem justificação obrigatória.")
                             else:
                                 end_dt = datetime.datetime.now()
@@ -354,7 +398,8 @@ else:
                                 for idx, d in respostas_rn.items():
                                     conn.execute('INSERT OR REPLACE INTO respostas VALUES (?, ?, ?, ?, ?)', (expert_id, round_num, idx, d['score'], d['just']))
                                 conn.commit()
-                                st.success("Submetido com sucesso!")
+                                st.session_state.submitted_round = round_num
+                                st.session_state.submetido_sucesso = True
                                 st.rerun()
         conn.close()
     else:
@@ -405,8 +450,9 @@ else:
                     df_r = df_all_rep[df_all_rep['round_num'] == r]
                     pivot = df_r.pivot(index='statement_id', columns='expert_id', values='score')
                     stats = pd.DataFrame(index=pivot.index)
-                    stats['Média'] = pivot.mean(axis=1).round(2)
-                    stats['Desv. Padrão'] = pivot.std(axis=1).round(2)
+                    # Filtra scores > 0 para ignorar quem escolheu "Não relevante"
+                    stats['Média'] = pivot[pivot > 0].mean(axis=1).round(2)
+                    stats['Desv. Padrão'] = pivot[pivot > 0].std(axis=1).round(2)
                     stats['Índice Consenso (%)'] = pivot.apply(lambda row: calcular_consenso_percentual(row.dropna(), escala_max), axis=1).round(1)
                     pivot.columns = [f"Perito {col}" for col in pivot.columns]
                     df_final = pd.concat([pivot, stats], axis=1)
@@ -426,7 +472,6 @@ else:
             
             col1, col2 = st.columns(2)
             with col1:
-                # O clear_on_submit=True garante que o texto desaparece imediatamente da caixa
                 with st.form("form_add_user", clear_on_submit=True):
                     novo_id = st.text_input("Novo ID (ex: P01)")
                     nova_pass = st.text_input("Código de Acesso")
@@ -459,7 +504,6 @@ else:
                     conn.commit()
                     st.rerun()
             
-            # O clear_on_submit=True garante que o texto desaparece imediatamente da caixa
             with st.form("form_add_af", clear_on_submit=True):
                 nova_af = st.text_area("Texto da nova afirmação")
                 if st.form_submit_button("Adicionar Afirmação"):
@@ -502,35 +546,32 @@ else:
 
             c1, c2, c3 = st.columns(3)
             with c1:
-                with st.form("form_escala"):
-                    st.markdown("**Escala Máxima (Apenas Ímpares)**")
-                    escalas_impares = [3, 5, 7, 9]
-                    idx_escala = escalas_impares.index(escala_max) if escala_max in escalas_impares else 1
-                    nova_escala = st.selectbox("Valor máximo", escalas_impares, index=idx_escala)
-                    if st.form_submit_button("Atualizar Escala"):
-                        conn.execute("UPDATE configuracoes SET valor=? WHERE chave='escala_max'", (str(nova_escala),))
-                        conn.commit()
-                        st.success("Atualizado!")
-                        st.rerun()
+                st.markdown("**Escala Máxima (Ímpares)**")
+                escalas_impares = [3, 5, 7, 9]
+                idx_escala = escalas_impares.index(escala_max) if escala_max in escalas_impares else 1
+                nova_escala = st.selectbox("Valor máximo", escalas_impares, index=idx_escala)
+                if st.button("Atualizar Escala"):
+                    conn.execute("UPDATE configuracoes SET valor=? WHERE chave='escala_max'", (str(nova_escala),))
+                    conn.commit()
+                    st.success("Atualizado!")
+                    st.rerun()
             with c2:
-                with st.form("form_rondas"):
-                    st.markdown("Total de Rondas")
-                    novas_rondas = st.number_input("Nº de Rondas", min_value=1, max_value=5, value=max_rondas)
-                    if st.form_submit_button("Atualizar Rondas"):
-                        conn.execute("UPDATE configuracoes SET valor=? WHERE chave='max_rondas'", (str(novas_rondas),))
-                        conn.commit()
-                        st.success("Atualizadas!")
-                        st.rerun()
+                st.markdown("**Total de Rondas**")
+                novas_rondas = st.number_input("Nº de Rondas", min_value=1, max_value=10, value=max_rondas)
+                if st.button("Atualizar Rondas"):
+                    conn.execute("UPDATE configuracoes SET valor=? WHERE chave='max_rondas'", (str(novas_rondas),))
+                    conn.commit()
+                    st.success("Atualizadas!")
+                    st.rerun()
             with c3:
-                with st.form("form_regra_just"):
-                    st.markdown("**Regra de Justificação**")
-                    opcoes_regra = ["Extremos (1 e Max)", "Sempre obrigatória", "Apenas notas baixas (1)", "Desativada (Opcional)"]
-                    idx_regra = opcoes_regra.index(regra_just) if regra_just in opcoes_regra else 0
-                    nova_regra = st.selectbox("Exigir em:", opcoes_regra, index=idx_regra)
-                    if st.form_submit_button("Atualizar Regra"):
-                        conn.execute("UPDATE configuracoes SET valor=? WHERE chave='regra_justificacao'", (nova_regra,))
-                        conn.commit()
-                        st.success("Atualizada!")
-                        st.rerun()
+                st.markdown("**Regra de Justificação**")
+                opcoes_regra = ["Extremos (1 e Max)", "Sempre obrigatória", "Apenas notas baixas (1)", "Desativada (Opcional)"]
+                idx_regra = opcoes_regra.index(regra_just) if regra_just in opcoes_regra else 0
+                nova_regra = st.selectbox("Exigir em:", opcoes_regra, index=idx_regra)
+                if st.button("Atualizar Regra"):
+                    conn.execute("UPDATE configuracoes SET valor=? WHERE chave='regra_justificacao'", (nova_regra,))
+                    conn.commit()
+                    st.success("Atualizada!")
+                    st.rerun()
                     
         conn.close()
