@@ -152,7 +152,7 @@ def generate_ai_analysis_prompt(conn, escala_max):
     return prompt
 
 def get_db_connection():
-    conn = sqlite3.connect("delphi_v10.db")
+    conn = sqlite3.connect("delphi_v12.db")
     conn.execute('CREATE TABLE IF NOT EXISTS respostas (expert_id TEXT, round_num INTEGER, statement_id INTEGER, score INTEGER, justification TEXT, PRIMARY KEY (expert_id, round_num, statement_id))')
     conn.execute('CREATE TABLE IF NOT EXISTS utilizadores (expert_id TEXT PRIMARY KEY, password TEXT, must_change INTEGER DEFAULT 1)')
     conn.execute('CREATE TABLE IF NOT EXISTS afirmacoes (id INTEGER PRIMARY KEY AUTOINCREMENT, texto TEXT)')
@@ -422,10 +422,12 @@ else:
         with tab3:
             st.subheader("Utilizadores Registados")
             df_users = pd.read_sql_query("SELECT expert_id as 'ID de Perito' FROM utilizadores", conn)
-            st.dataframe(df_users, use_container_width=True)
+            st.dataframe(df_users, hide_index=True, use_container_width=True) 
+            
             col1, col2 = st.columns(2)
             with col1:
-                with st.form("form_add_user"):
+                # O clear_on_submit=True garante que o texto desaparece imediatamente da caixa
+                with st.form("form_add_user", clear_on_submit=True):
                     novo_id = st.text_input("Novo ID (ex: P01)")
                     nova_pass = st.text_input("Código de Acesso")
                     if st.form_submit_button("Adicionar Perito"):
@@ -433,9 +435,9 @@ else:
                             try:
                                 conn.execute("INSERT INTO utilizadores VALUES (?, ?, 1)", (novo_id, hash_password(nova_pass)))
                                 conn.commit()
-                                st.success(f"Utilizador {novo_id} criado!")
                                 st.rerun()
-                            except: st.error("O ID já existe.")
+                            except sqlite3.IntegrityError: 
+                                st.error("Erro: Esse ID já existe na base de dados.")
             with col2:
                 with st.form("form_del_user"):
                     del_id = st.selectbox("Remover Perito", df_users['ID de Perito'].tolist() if not df_users.empty else [])
@@ -443,33 +445,41 @@ else:
                         if del_id:
                             conn.execute("DELETE FROM utilizadores WHERE expert_id=?", (del_id,))
                             conn.commit()
-                            st.success("Removido!")
                             st.rerun()
             
         with tab4:
             st.subheader("Gerir Afirmações")
             df_af = pd.read_sql_query("SELECT * FROM afirmacoes", conn)
             st.dataframe(df_af, hide_index=True, use_container_width=True)
-            with st.form("form_add_af"):
+            
+            if not df_af.empty:
+                if st.button("🗑️ Apagar TODAS as Afirmações"):
+                    conn.execute("DELETE FROM afirmacoes")
+                    conn.execute("DELETE FROM sqlite_sequence WHERE name='afirmacoes'")
+                    conn.commit()
+                    st.rerun()
+            
+            # O clear_on_submit=True garante que o texto desaparece imediatamente da caixa
+            with st.form("form_add_af", clear_on_submit=True):
                 nova_af = st.text_area("Texto da nova afirmação")
                 if st.form_submit_button("Adicionar Afirmação"):
                     if nova_af.strip():
                         conn.execute("INSERT INTO afirmacoes (texto) VALUES (?)", (nova_af,))
                         conn.commit()
-                        st.success("Adicionada!")
                         st.rerun()
             with st.form("form_del_af"):
                 del_af_id = st.selectbox("Apagar Afirmação ID", df_af['id'].tolist() if not df_af.empty else [])
                 if st.form_submit_button("Apagar Selecionada"):
                     conn.execute("DELETE FROM afirmacoes WHERE id=?", (del_af_id,))
+                    count_af = conn.execute("SELECT COUNT(*) FROM afirmacoes").fetchone()[0]
+                    if count_af == 0:
+                        conn.execute("DELETE FROM sqlite_sequence WHERE name='afirmacoes'")
                     conn.commit()
-                    st.success("Apagada!")
                     st.rerun()
 
         with tab5:
             st.subheader("Configurações e Controlo de Rondas")
             
-            # BOTÃO DE RESET TOTAL PARA OS IDS VOLTAREM AO 1
             if st.button("🚨 REINICIAR ESTUDO (Apagar TUDO e Resetar IDs de Afirmações)"):
                 conn.execute("DELETE FROM respostas")
                 conn.execute("DELETE FROM utilizadores")
