@@ -156,7 +156,7 @@ def generate_ai_analysis_prompt(conn, escala_max):
     return prompt
 
 def get_db_connection():
-    conn = sqlite3.connect("delphi_v16.db")
+    conn = sqlite3.connect("delphi_v18.db")
     conn.execute('CREATE TABLE IF NOT EXISTS respostas (expert_id TEXT, round_num INTEGER, statement_id INTEGER, score INTEGER, justification TEXT, PRIMARY KEY (expert_id, round_num, statement_id))')
     conn.execute('CREATE TABLE IF NOT EXISTS utilizadores (expert_id TEXT PRIMARY KEY, password TEXT, must_change INTEGER DEFAULT 1)')
     conn.execute('CREATE TABLE IF NOT EXISTS afirmacoes (id INTEGER PRIMARY KEY AUTOINCREMENT, texto TEXT)')
@@ -359,10 +359,10 @@ else:
                                 st.markdown(f"👤 **O seu voto anterior:** `{voto_antigo}` | 👥 **Média do grupo:** `{media_grupo:.2f}`")
                                 st.markdown(f"👥 **Respostas dos restantes peritos:** `{outros_str}`")
                                 
-                                is_media_neutra = (media_grupo > 0 and round(media_grupo) == ponto_neutro)
+                                is_voto_neutro = (int(voto_antigo) == ponto_neutro)
                                 quer_manter = "Não"
                                 
-                                if is_media_neutra:
+                                if is_voto_neutro:
                                     quer_manter = st.radio(
                                         f"Classificou esta afirmação como não relevante. Quer manter a sua resposta anterior? (ID:{idx})", 
                                         ["Sim", "Não"], 
@@ -371,10 +371,10 @@ else:
                                         index=None
                                     )
                                 
-                                if is_media_neutra and quer_manter is None:
+                                if is_voto_neutro and quer_manter is None:
                                     st.warning("⚠️ Escolha 'Sim' ou 'Não' na pergunta acima para poder avançar.")
                                     respostas_rn[idx] = {"score": None, "just": "", "obr": False}
-                                elif is_media_neutra and quer_manter == "Sim":
+                                elif is_voto_neutro and quer_manter == "Sim":
                                     st.info("🚫 Não relevante para si.")
                                     respostas_rn[idx] = {"score": 0, "just": just_antiga, "obr": False}
                                 else:
@@ -405,7 +405,7 @@ else:
         st.title("Painel de Investigador")
         st.sidebar.button("Logout", on_click=lambda: st.session_state.update(logged_in=False))
         
-        tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 Módulo Estatístico", "📊 Respostas Brutas", "👥 Utilizadores", "📝 Afirmações", "⚙️ Configurações"])
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📈 Módulo Estatístico", "📊 Respostas Brutas", "👥 Utilizadores", "📝 Afirmações", "⚙️ Configurações", "👁️ Visão de Perito"])
         conn = get_db_connection()
         escala_max = int(conn.execute("SELECT valor FROM configuracoes WHERE chave='escala_max'").fetchone()[0])
         max_rondas = int(conn.execute("SELECT valor FROM configuracoes WHERE chave='max_rondas'").fetchone()[0])
@@ -419,7 +419,6 @@ else:
             df_af_rep = pd.read_sql_query("SELECT * FROM afirmacoes", conn)
             df_tempos_rep = pd.read_sql_query("SELECT * FROM tempos_ronda", conn)
             
-            # Verificação se todas as afirmações da ronda ativa atingiram consenso (>= 80%)
             if not df_all_rep.empty and not df_af_rep.empty:
                 df_r_atual = df_all_rep[df_all_rep['round_num'] == ronda_ativa]
                 if not df_r_atual.empty:
@@ -639,5 +638,54 @@ else:
                     conn.commit()
                     st.success("Atualizada!")
                     st.rerun()
+
+        with tab6:
+            st.subheader("👁️ Visão em Tempo Real do Ecrã dos Peritos")
+            st.info("Aqui pode inspecionar exatamente o estado de consenso e as afirmações que cada perito visualiza.")
+            
+            lista_experts = [u[0] for u in conn.execute("SELECT expert_id FROM utilizadores").fetchall()]
+            if not lista_experts:
+                st.warning("Ainda não existem peritos registados.")
+            else:
+                sel_expert = st.selectbox("Selecione o perito para simular a visão:", lista_experts)
+                if sel_expert:
+                    st.markdown(f"### Perspetiva do Perito: **{sel_expert}**")
+                    df_all_r = pd.read_sql_query("SELECT * FROM respostas", conn)
+                    df_af = pd.read_sql_query("SELECT * FROM afirmacoes ORDER BY id", conn)
+                    
+                    rondas_feitas_exp = [r[0] for r in conn.execute("SELECT DISTINCT round_num FROM respostas WHERE expert_id = ?", (sel_expert,)).fetchall()]
+                    r_exp = 1
+                    while r_exp <= max_rondas:
+                        if r_exp not in rondas_feitas_exp: break
+                        r_exp += 1
+                        
+                    st.markdown(f"**Ronda atual em que este perito se encontra:** Ronda {min(r_exp, max_rondas)}")
+                    
+                    if not df_af.empty:
+                        for _, row_a in df_af.iterrows():
+                            aid = row_a['id']
+                            atxt = row_a['texto']
+                            
+                            # Verificar se já consensualizou nas rondas anteriores
+                            alc_cons = False
+                            for pr in range(1, r_exp):
+                                sprev = df_all_r[(df_all_r['round_num'] == pr) & (df_all_r['statement_id'] == aid) & (df_all_r['score'] > 0)]['score'].dropna()
+                                if not sprev.empty and calcular_consenso_percentual(sprev, escala_max) >= 80.0:
+                                    alc_cons = True
+                                    break
+                            
+                            if alc_cons:
+                                st.success(f"✅ **[ID {aid}]** {atxt} — *Afirmação consensualizada no grupo.*")
+                            else:
+                                # Verificar se o perito marcou como não relevante para si
+                                r_ant_exp = r_exp - 1
+                                if r_ant_exp >= 1:
+                                    v_ant = df_all_r[(df_all_r['expert_id'] == sel_expert) & (df_all_r['round_num'] == r_ant_exp) & (df_all_r['statement_id'] == aid)]
+                                    if not v_ant.empty and int(v_ant['score'].values[0]) == 0:
+                                        st.warning(f"🚫 **[ID {aid}]** {atxt} — *Marcada pelo perito como 'Não relevante para si'.*")
+                                        continue
+                                st.info(f"📝 **[ID {aid}]** {atxt} — *Pendente / Ativa para votação.*")
+                    else:
+                        st.warning("Não existem afirmações inseridas.")
                     
         conn.close()
