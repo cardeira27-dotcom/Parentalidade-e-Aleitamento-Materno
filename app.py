@@ -32,43 +32,75 @@ def verify_password(stored_password, provided_password, conn=None, user_id=None)
     verify_hash = hashlib.pbkdf2_hmac('sha256', provided_password.encode('utf-8'), salt.encode('utf-8'), 100000).hex()
     return verify_hash == pwd_hash
 
-def generate_pdf(expert_id, round_num, respostas, duration_seconds=0):
+# Helper para evitar que emojis inseridos nas justificações quebrem o gerador de PDF
+def safe_txt(txt):
+    return str(txt).encode('latin-1', 'replace').decode('latin-1')
+
+# Novo gerador de PDF unificado para o perito (gera uma ronda específica ou o histórico de todas)
+def generate_expert_report_pdf(expert_id, conn, specific_round=None):
     pdf = FPDF()
     pdf.add_page()
+    
+    df_res = pd.read_sql_query("SELECT * FROM respostas WHERE expert_id=?", conn, params=(expert_id,))
+    df_af = pd.read_sql_query("SELECT * FROM afirmacoes", conn)
+    df_t = pd.read_sql_query("SELECT * FROM tempos_ronda WHERE expert_id=?", conn, params=(expert_id,))
+    
+    titulo = "Relatorio Completo de Respostas" if specific_round is None else f"Relatorio de Respostas - Ronda {specific_round}"
     pdf.set_font("Arial", 'B', 16)
-    pdf.cell(0, 10, txt=f"Relatorio de Respostas - Ronda {round_num}", ln=True, align='C')
+    pdf.cell(0, 10, txt=safe_txt(titulo), ln=True, align='C')
     pdf.set_font("Arial", size=12)
-    pdf.cell(0, 10, txt=f"Perito: {expert_id}", ln=True)
-    mins, secs = divmod(duration_seconds, 60)
-    pdf.cell(0, 8, txt=f"Tempo gasto na ronda: {mins}m {secs}s", ln=True)
+    pdf.cell(0, 10, txt=safe_txt(f"Perito: {expert_id}"), ln=True)
     pdf.ln(5)
-    for idx, dados in respostas.items():
-        pdf.set_font("Arial", 'B', 10)
-        pdf.multi_cell(0, 8, txt=f"Afirmacao ID {idx}: Nota {dados['score']}")
-        pdf.set_font("Arial", size=10)
-        pdf.multi_cell(0, 8, txt=f"Justificacao: {dados['just'] if dados['just'] else 'N/A'}")
+    
+    rondas_to_print = [specific_round] if specific_round else sorted(df_res['round_num'].unique())
+    
+    for r in rondas_to_print:
+        pdf.set_font("Arial", 'B', 14)
+        pdf.cell(0, 10, txt=safe_txt(f"--- RONDA {r} ---"), ln=True)
+        
+        t_row = df_t[df_t['round_num'] == r]
+        if not t_row.empty:
+            dur = t_row.iloc[0]['duration_seconds']
+            mins, secs = divmod(int(dur), 60)
+            pdf.set_font("Arial", 'I', 10)
+            pdf.cell(0, 6, txt=safe_txt(f"Tempo gasto na ronda: {mins}m {secs}s"), ln=True)
         pdf.ln(3)
+        
+        df_r = df_res[df_res['round_num'] == r]
+        for _, row in df_r.iterrows():
+            stmt_id = row['statement_id']
+            score = row['score']
+            just = row['justification']
+            texto_af = df_af[df_af['id'] == stmt_id]['texto'].values[0]
+            
+            pdf.set_font("Arial", 'B', 10)
+            pdf.multi_cell(0, 6, txt=safe_txt(f"Afirmacao ID {stmt_id}: {texto_af}"))
+            pdf.set_font("Arial", size=10)
+            pdf.multi_cell(0, 6, txt=safe_txt(f"Nota: {score} | Justificacao: {just if just else 'N/A'}"))
+            pdf.ln(3)
+        pdf.ln(5)
+        
     return pdf.output(dest='S').encode('latin-1')
 
 def generate_admin_report_pdf(df_respostas, df_users, df_afirmacoes, escala_max, df_tempos):
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", 'B', 16)
-    pdf.cell(0, 10, txt="Relatorio Global do Estudo Delphi", ln=True, align='C')
+    pdf.cell(0, 10, txt=safe_txt("Relatorio Global do Estudo Delphi"), ln=True, align='C')
     pdf.set_font("Arial", size=11)
-    pdf.cell(0, 8, txt=f"Total de Peritos Registados: {len(df_users)}", ln=True)
-    pdf.cell(0, 8, txt=f"Total de Afirmacoes no Estudo: {len(df_afirmacoes)}", ln=True)
+    pdf.cell(0, 8, txt=safe_txt(f"Total de Peritos Registados: {len(df_users)}"), ln=True)
+    pdf.cell(0, 8, txt=safe_txt(f"Total de Afirmacoes no Estudo: {len(df_afirmacoes)}"), ln=True)
     pdf.ln(10)
     
     pdf.set_font("Arial", 'B', 12)
-    pdf.cell(0, 10, txt="Resumo Estatistico por Ronda:", ln=True)
+    pdf.cell(0, 10, txt=safe_txt("Resumo Estatistico por Ronda:"), ln=True)
     
     if not df_respostas.empty:
         todas_rondas = sorted(df_respostas['round_num'].unique())
         for r in todas_rondas:
             pdf.ln(5)
             pdf.set_font("Arial", 'B', 11)
-            pdf.cell(0, 8, txt=f"--- RONDA {r} ---", ln=True)
+            pdf.cell(0, 8, txt=safe_txt(f"--- RONDA {r} ---"), ln=True)
             pdf.set_font("Arial", size=10)
             
             df_r = df_respostas[df_respostas['round_num'] == r]
@@ -80,7 +112,7 @@ def generate_admin_report_pdf(df_respostas, df_users, df_afirmacoes, escala_max,
                 if len(notas) > 0:
                     media = notas.mean()
                     cons = (notas >= limiar_consenso).mean() * 100
-                    pdf.multi_cell(0, 6, txt=f"Afirmacao ID {idx}: Media = {media:.2f} | Indice Consenso = {cons:.1f}%")
+                    pdf.multi_cell(0, 6, txt=safe_txt(f"Afirmacao ID {idx}: Media = {media:.2f} | Indice Consenso = {cons:.1f}%"))
             
             if not df_tempos.empty:
                 df_t_r = df_tempos[df_tempos['round_num'] == r]
@@ -88,10 +120,10 @@ def generate_admin_report_pdf(df_respostas, df_users, df_afirmacoes, escala_max,
                     media_tempo = df_t_r['duration_seconds'].mean()
                     mm, ss = divmod(int(media_tempo), 60)
                     pdf.ln(2)
-                    pdf.cell(0, 6, txt=f"Tempo medio de resposta na Ronda {r}: {mm}m {ss}s", ln=True)
+                    pdf.cell(0, 6, txt=safe_txt(f"Tempo medio de resposta na Ronda {r}: {mm}m {ss}s"), ln=True)
     else:
         pdf.set_font("Arial", size=10)
-        pdf.cell(0, 10, txt="Ainda nao existem respostas registadas no sistema.", ln=True)
+        pdf.cell(0, 10, txt=safe_txt("Ainda nao existem respostas registadas no sistema."), ln=True)
         
     return pdf.output(dest='S').encode('latin-1')
 
@@ -151,7 +183,7 @@ def generate_ai_analysis_prompt(conn, escala_max):
     return prompt
 
 def get_db_connection():
-    conn = sqlite3.connect("delphi_v5.db")
+    conn = sqlite3.connect("delphi_v6.db")
     conn.execute('CREATE TABLE IF NOT EXISTS respostas (expert_id TEXT, round_num INTEGER, statement_id INTEGER, score INTEGER, justification TEXT, PRIMARY KEY (expert_id, round_num, statement_id))')
     conn.execute('CREATE TABLE IF NOT EXISTS utilizadores (expert_id TEXT PRIMARY KEY, password TEXT, must_change INTEGER DEFAULT 1)')
     conn.execute('CREATE TABLE IF NOT EXISTS afirmacoes (id INTEGER PRIMARY KEY AUTOINCREMENT, texto TEXT)')
@@ -302,14 +334,21 @@ else:
             
         if round_num > max_rondas:
             st.success("🎉 Já concluiu todas as rondas previstas para este estudo. Muito obrigado!")
+            pdf_final = generate_expert_report_pdf(expert_id, conn)
+            st.download_button("📄 Baixar Relatório Final (Todas as Rondas)", data=pdf_final, file_name=f"relatorio_final_{expert_id}.pdf", mime="application/pdf")
+            
         elif round_num > ronda_ativa:
             st.info(f"⏳ Já concluiu as rondas disponíveis. A **Ronda {round_num}** ainda se encontra fechada pelo investigador. Por favor, aguarde que seja dada a ordem para avançar.")
+            pdf_anteriores = generate_expert_report_pdf(expert_id, conn)
+            st.download_button("📄 Baixar Respostas Anteriores (PDF)", data=pdf_anteriores, file_name=f"respostas_anteriores_{expert_id}.pdf", mime="application/pdf")
+            
         else:
             st.header(f"Ronda {round_num}")
             if st.session_state.submetido_sucesso:
                 r_msg = st.session_state.submitted_round
                 st.success(f"Ronda {r_msg} submetida com sucesso!")
-                st.download_button(f"Baixar comprovativo em PDF", data=st.session_state.pdf_bytes, file_name=f"ronda_{r_msg}_{expert_id}.pdf")
+                pdf_submissao = generate_expert_report_pdf(expert_id, conn, specific_round=r_msg)
+                st.download_button(f"Baixar comprovativo em PDF", data=pdf_submissao, file_name=f"ronda_{r_msg}_{expert_id}.pdf", mime="application/pdf")
             else:
                 # Gestão do tempo do perito
                 cursor = conn.cursor()
@@ -354,45 +393,66 @@ else:
                                     conn.execute('INSERT OR REPLACE INTO respostas VALUES (?, ?, ?, ?, ?)', (expert_id, 1, idx, d['score'], d['just']))
                                 conn.commit()
                                 st.session_state.submitted_round = 1
-                                st.session_state.pdf_bytes = generate_pdf(expert_id, 1, respostas, duration)
                                 st.session_state.submetido_sucesso = True
                                 st.rerun()
                 
                 else: 
-                    ronda_anterior = round_num - 1
-                    df_ant = df_all[df_all['round_num'] == ronda_anterior]
+                    # Lógica de processamento de consensos prévios (Rondas > 1)
+                    consensualizadas = []
                     divergencias = []
+                    limiar_consenso = escala_max - 1
                     
                     for idx in df_af['id'].tolist():
-                        scores_item = df_ant[df_ant['statement_id'] == idx]['score']
-                        if not scores_item.empty:
-                            if (scores_item >= (escala_max - 1)).mean() < 0.8:
-                                divergencias.append(idx)
+                        alcancou_consenso = False
+                        # Verifica se atingiu >= 80% em ALGUMA ronda anterior
+                        for prev_r in range(1, round_num):
+                            scores_prev = df_all[(df_all['round_num'] == prev_r) & (df_all['statement_id'] == idx)]['score'].dropna()
+                            if not scores_prev.empty:
+                                if (scores_prev >= limiar_consenso).mean() >= 0.8:
+                                    alcancou_consenso = True
+                                    break
+                        
+                        if alcancou_consenso:
+                            consensualizadas.append(idx)
+                        else:
+                            divergencias.append(idx)
                     
                     if not divergencias:
-                        st.success(f"Parabéns! Todas as afirmações atingiram consenso na Ronda {ronda_anterior}.")
+                        st.success(f"Parabéns! Todas as afirmações atingiram consenso nas rondas anteriores. Não existem pendências.")
+                        pdf_completo = generate_expert_report_pdf(expert_id, conn)
+                        st.download_button("📄 Baixar Relatório Completo", data=pdf_completo, file_name=f"relatorio_completo_{expert_id}.pdf", mime="application/pdf")
                     else:
-                        st.info(f"Nesta Ronda {round_num}, responda apenas às {len(divergencias)} afirmações sem consenso. Regra de justificação: **{regra_just}**.")
+                        st.info(f"Nesta Ronda {round_num}, as afirmações consensuais estão assinaladas. Responda apenas às {len(divergencias)} afirmações pendentes. Regra de justificação: **{regra_just}**.")
                         with st.form(f"form_r{round_num}"):
                             respostas_rn = {}
-                            for idx in divergencias:
+                            
+                            for idx in df_af['id'].tolist():
                                 texto_af = df_af[df_af['id'] == idx]['texto'].values[0]
-                                row_antigo = df_ant[(df_ant['expert_id'] == expert_id) & (df_ant['statement_id'] == idx)]
-                                voto_antigo = row_antigo['score'].values[0] if not row_antigo.empty else 1
-                                outros_votos = df_ant[(df_ant['statement_id'] == idx) & (df_ant['expert_id'] != expert_id)]['score'].tolist()
-                                outros_str = ", ".join(map(str, outros_votos)) if outros_votos else "Sem registos"
                                 
-                                st.markdown(f"### {texto_af}")
-                                st.markdown(f"👤 **O seu voto anterior:** `{voto_antigo}`")
-                                st.markdown(f"👥 **Os outros responderam:** `{outros_str}`")
-                                
-                                index_voto = int(voto_antigo) - 1 if int(voto_antigo) in escala_lista else 0
-                                s = st.radio(f"Novo voto (ID:{idx})", escala_lista, key=f"sr_{idx}", horizontal=True, index=index_voto)
-                                j = st.text_area(f"Nova justificação (ID:{idx})", key=f"jr_{idx}")
-                                
-                                obr = verificar_obrigatoriedade(s, escala_max, regra_just)
-                                respostas_rn[idx] = {"score": s, "just": j, "obr": obr}
-                                st.divider()
+                                if idx in consensualizadas:
+                                    st.markdown(f"### {texto_af}")
+                                    st.success("✅ **Afirmação consensualizada**")
+                                    st.divider()
+                                else:
+                                    ronda_anterior = round_num - 1
+                                    df_ant = df_all[df_all['round_num'] == ronda_anterior]
+                                    
+                                    row_antigo = df_ant[(df_ant['expert_id'] == expert_id) & (df_ant['statement_id'] == idx)]
+                                    voto_antigo = row_antigo['score'].values[0] if not row_antigo.empty else 1
+                                    outros_votos = df_ant[(df_ant['statement_id'] == idx) & (df_ant['expert_id'] != expert_id)]['score'].tolist()
+                                    outros_str = ", ".join(map(str, outros_votos)) if outros_votos else "Sem registos"
+                                    
+                                    st.markdown(f"### {texto_af}")
+                                    st.markdown(f"👤 **O seu voto anterior:** `{voto_antigo}`")
+                                    st.markdown(f"👥 **Os outros responderam:** `{outros_str}`")
+                                    
+                                    index_voto = int(voto_antigo) - 1 if int(voto_antigo) in escala_lista else 0
+                                    s = st.radio(f"Novo voto (ID:{idx})", escala_lista, key=f"sr_{idx}", horizontal=True, index=index_voto)
+                                    j = st.text_area(f"Nova justificação (ID:{idx})", key=f"jr_{idx}")
+                                    
+                                    obr = verificar_obrigatoriedade(s, escala_max, regra_just)
+                                    respostas_rn[idx] = {"score": s, "just": j, "obr": obr}
+                                    st.divider()
                                 
                             if st.form_submit_button(f"Submeter Ronda {round_num}"):
                                 if any(d['obr'] and not d['just'].strip() for d in respostas_rn.values()):
@@ -406,7 +466,6 @@ else:
                                         conn.execute('INSERT OR REPLACE INTO respostas VALUES (?, ?, ?, ?, ?)', (expert_id, round_num, idx, d['score'], d['just']))
                                     conn.commit()
                                     st.session_state.submitted_round = round_num
-                                    st.session_state.pdf_bytes = generate_pdf(expert_id, round_num, respostas_rn, duration)
                                     st.session_state.submetido_sucesso = True
                                     st.rerun()
         conn.close()
