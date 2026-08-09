@@ -156,7 +156,7 @@ def generate_ai_analysis_prompt(conn, escala_max):
     return prompt
 
 def get_db_connection():
-    conn = sqlite3.connect("delphi_v18.db")
+    conn = sqlite3.connect("delphi_v19.db")
     conn.execute('CREATE TABLE IF NOT EXISTS respostas (expert_id TEXT, round_num INTEGER, statement_id INTEGER, score INTEGER, justification TEXT, PRIMARY KEY (expert_id, round_num, statement_id))')
     conn.execute('CREATE TABLE IF NOT EXISTS utilizadores (expert_id TEXT PRIMARY KEY, password TEXT, must_change INTEGER DEFAULT 1)')
     conn.execute('CREATE TABLE IF NOT EXISTS afirmacoes (id INTEGER PRIMARY KEY AUTOINCREMENT, texto TEXT)')
@@ -360,7 +360,6 @@ else:
                                 st.markdown(f"👥 **Respostas dos restantes peritos:** `{outros_str}`")
                                 
                                 is_voto_neutro = (int(voto_antigo) == ponto_neutro)
-                                quer_manter = "Não"
                                 
                                 if is_voto_neutro:
                                     quer_manter = st.radio(
@@ -370,14 +369,21 @@ else:
                                         horizontal=True, 
                                         index=None
                                     )
-                                
-                                if is_voto_neutro and quer_manter is None:
-                                    st.warning("⚠️ Escolha 'Sim' ou 'Não' na pergunta acima para poder avançar.")
-                                    respostas_rn[idx] = {"score": None, "just": "", "obr": False}
-                                elif is_voto_neutro and quer_manter == "Sim":
-                                    st.info("🚫 Não relevante para si.")
-                                    respostas_rn[idx] = {"score": 0, "just": just_antiga, "obr": False}
+                                    
+                                    if quer_manter is None:
+                                        st.warning("⚠️ Escolha 'Sim' ou 'Não' na pergunta acima para poder avançar.")
+                                        respostas_rn[idx] = {"score": None, "just": "", "obr": False}
+                                    elif quer_manter == "Sim":
+                                        st.info("🚫 Não relevante para si.")
+                                        respostas_rn[idx] = {"score": 0, "just": just_antiga, "obr": False}
+                                    else: # Se selecionar "Não", abre a escala para escolher um novo valor
+                                        index_voto = int(voto_antigo) - 1 if (voto_antigo > 0 and int(voto_antigo) in escala_lista) else (ponto_neutro - 1)
+                                        s = st.radio(f"Novo voto (ID:{idx})", escala_lista, key=f"sr_{idx}", horizontal=True, index=index_voto)
+                                        j = st.text_area(f"Nova justificação (ID:{idx})", value=just_antiga, key=f"jr_{idx}")
+                                        obr = verificar_obrigatoriedade(s, escala_max, regra_just)
+                                        respostas_rn[idx] = {"score": s, "just": j, "obr": obr}
                                 else:
+                                    # Se não votou no ponto neutro anteriormente, exibe diretamente a escala para reavaliação
                                     index_voto = int(voto_antigo) - 1 if (voto_antigo > 0 and int(voto_antigo) in escala_lista) else (ponto_neutro - 1)
                                     s = st.radio(f"Novo voto (ID:{idx})", escala_lista, key=f"sr_{idx}", horizontal=True, index=index_voto)
                                     j = st.text_area(f"Nova justificação (ID:{idx})", value=just_antiga, key=f"jr_{idx}")
@@ -666,7 +672,6 @@ else:
                             aid = row_a['id']
                             atxt = row_a['texto']
                             
-                            # Verificar se já consensualizou nas rondas anteriores
                             alc_cons = False
                             for pr in range(1, r_exp):
                                 sprev = df_all_r[(df_all_r['round_num'] == pr) & (df_all_r['statement_id'] == aid) & (df_all_r['score'] > 0)]['score'].dropna()
@@ -677,7 +682,6 @@ else:
                             if alc_cons:
                                 st.success(f"✅ **[ID {aid}]** {atxt} — *Afirmação consensualizada no grupo.*")
                             else:
-                                # Verificar se o perito marcou como não relevante para si
                                 r_ant_exp = r_exp - 1
                                 if r_ant_exp >= 1:
                                     v_ant = df_all_r[(df_all_r['expert_id'] == sel_expert) & (df_all_r['round_num'] == r_ant_exp) & (df_all_r['statement_id'] == aid)]
