@@ -186,7 +186,7 @@ def generate_ai_analysis_prompt(conn, escala_max):
     return prompt
 
 def get_db_connection():
-    conn = sqlite3.connect("delphi_v8.db")
+    conn = sqlite3.connect("delphi_v9.db")
     conn.execute('CREATE TABLE IF NOT EXISTS respostas (expert_id TEXT, round_num INTEGER, statement_id INTEGER, score INTEGER, justification TEXT, PRIMARY KEY (expert_id, round_num, statement_id))')
     conn.execute('CREATE TABLE IF NOT EXISTS utilizadores (expert_id TEXT PRIMARY KEY, password TEXT, must_change INTEGER DEFAULT 1)')
     conn.execute('CREATE TABLE IF NOT EXISTS afirmacoes (id INTEGER PRIMARY KEY AUTOINCREMENT, texto TEXT)')
@@ -207,7 +207,6 @@ def get_db_connection():
     if c.fetchone()[0] == 0: c.execute("INSERT INTO configuracoes VALUES ('ronda_ativa', '1')")
     conn.commit()
 
-    # Garantir que a escala configurada é sempre ímpar (se por acaso estava par, ajusta para 5)
     escala_atual = int(conn.execute("SELECT valor FROM configuracoes WHERE chave='escala_max'").fetchone()[0])
     if escala_atual not in [3, 5, 7, 9]:
         conn.execute("UPDATE configuracoes SET valor='5' WHERE chave='escala_max'")
@@ -324,7 +323,6 @@ else:
             st.rerun()
         
         conn = get_db_connection()
-        df_all = pd.read_sql_query("SELECT * FROM respostas", conn)
         df_af = pd.read_sql_query("SELECT * FROM afirmacoes ORDER BY id", conn)
         escala_max = int(conn.execute("SELECT valor FROM configuracoes WHERE chave='escala_max'").fetchone()[0])
         ponto_neutro = (escala_max + 1) // 2
@@ -333,7 +331,8 @@ else:
         regra_just = conn.execute("SELECT valor FROM configuracoes WHERE chave='regra_justificacao'").fetchone()[0]
         escala_lista = list(range(1, escala_max + 1))
         
-        rondas_feitas = df_all[df_all['expert_id'] == expert_id]['round_num'].unique()
+        # Obter rondas submetidas por este utilizador de forma estrita via SQL
+        rondas_feitas = [r[0] for r in conn.execute("SELECT DISTINCT round_num FROM respostas WHERE expert_id = ?", (expert_id,)).fetchall()]
         
         round_num = 1
         while round_num <= max_rondas:
@@ -410,13 +409,14 @@ else:
                                 st.rerun()
                 
                 else: 
+                    df_all_r = pd.read_sql_query("SELECT * FROM respostas", conn)
                     consensualizadas = []
                     divergencias = []
                     
                     for idx in df_af['id'].tolist():
                         alcancou_consenso = False
                         for prev_r in range(1, round_num):
-                            scores_prev = df_all[(df_all['round_num'] == prev_r) & (df_all['statement_id'] == idx)]['score'].dropna()
+                            scores_prev = df_all_r[(df_all_r['round_num'] == prev_r) & (df_all_r['statement_id'] == idx)]['score'].dropna()
                             if not scores_prev.empty:
                                 if calcular_consenso_percentual(scores_prev, escala_max) >= 80.0:
                                     alcancou_consenso = True
@@ -445,7 +445,7 @@ else:
                                     st.divider()
                                 else:
                                     ronda_anterior = round_num - 1
-                                    df_ant = df_all[df_all['round_num'] == ronda_anterior]
+                                    df_ant = df_all_r[df_all_r['round_num'] == ronda_anterior]
                                     
                                     row_antigo = df_ant[(df_ant['expert_id'] == expert_id) & (df_ant['statement_id'] == idx)]
                                     voto_antigo = row_antigo['score'].values[0] if not row_antigo.empty else 1
@@ -461,7 +461,6 @@ else:
                                     st.markdown(f"👤 **O seu voto anterior:** `{voto_antigo}` | 👥 **Média do grupo:** `{media_grupo:.2f}`")
                                     st.markdown(f"👥 **Respostas dos restantes peritos:** `{outros_str}`")
                                     
-                                    # Verificar se a média do grupo está no ponto neutro (ex: 3 numa escala de 5, 4 numa escala de 7)
                                     is_media_neutra = (round(media_grupo) == ponto_neutro)
                                     
                                     quer_manter = "Sim"
@@ -481,7 +480,7 @@ else:
                                         obr = verificar_obrigatoriedade(s, escala_max, regra_just)
                                         respostas_rn[idx] = {"score": s, "just": j, "obr": obr}
                                     else:
-                                        # Se escolheu "Não", mantém a resposta anterior sem mostrar a escala
+                                        # Escala e justificação ocultas por completo do fluxo quando escolhe "Não"
                                         st.info("🔒 Resposta anterior mantida (escala oculta por opção de não relevância).")
                                         respostas_rn[idx] = {"score": int(voto_antigo), "just": just_antiga, "obr": False}
                                         
