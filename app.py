@@ -156,7 +156,7 @@ def generate_ai_analysis_prompt(conn, escala_max):
     return prompt
 
 def get_db_connection():
-    conn = sqlite3.connect("delphi_v15.db")
+    conn = sqlite3.connect("delphi_v16.db")
     conn.execute('CREATE TABLE IF NOT EXISTS respostas (expert_id TEXT, round_num INTEGER, statement_id INTEGER, score INTEGER, justification TEXT, PRIMARY KEY (expert_id, round_num, statement_id))')
     conn.execute('CREATE TABLE IF NOT EXISTS utilizadores (expert_id TEXT PRIMARY KEY, password TEXT, must_change INTEGER DEFAULT 1)')
     conn.execute('CREATE TABLE IF NOT EXISTS afirmacoes (id INTEGER PRIMARY KEY AUTOINCREMENT, texto TEXT)')
@@ -343,7 +343,6 @@ else:
                                 voto_antigo = row_antigo['score'].values[0] if not row_antigo.empty else 1
                                 just_antiga = row_antigo['justification'].values[0] if not row_antigo.empty else ""
                                 
-                                # Se o perito escolheu "Sim" (manter anterior não relevante) na ronda anterior (guardado como 0)
                                 if int(voto_antigo) == 0:
                                     st.markdown(f"### {texto_af}")
                                     st.warning("🚫 Não relevante para si.")
@@ -379,7 +378,6 @@ else:
                                     st.info("🚫 Não relevante para si.")
                                     respostas_rn[idx] = {"score": 0, "just": just_antiga, "obr": False}
                                 else:
-                                    # Se selecionou "Não" ou se a média não era neutra
                                     index_voto = int(voto_antigo) - 1 if (voto_antigo > 0 and int(voto_antigo) in escala_lista) else (ponto_neutro - 1)
                                     s = st.radio(f"Novo voto (ID:{idx})", escala_lista, key=f"sr_{idx}", horizontal=True, index=index_voto)
                                     j = st.text_area(f"Nova justificação (ID:{idx})", value=just_antiga, key=f"jr_{idx}")
@@ -421,12 +419,29 @@ else:
             df_af_rep = pd.read_sql_query("SELECT * FROM afirmacoes", conn)
             df_tempos_rep = pd.read_sql_query("SELECT * FROM tempos_ronda", conn)
             
+            # Verificação se todas as afirmações da ronda ativa atingiram consenso (>= 80%)
+            if not df_all_rep.empty and not df_af_rep.empty:
+                df_r_atual = df_all_rep[df_all_rep['round_num'] == ronda_ativa]
+                if not df_r_atual.empty:
+                    todas_consensualizadas = True
+                    for stmt_id in df_af_rep['id'].tolist():
+                        notas_stmt = df_r_atual[(df_r_atual['statement_id'] == stmt_id) & (df_r_atual['score'] > 0)]['score'].dropna()
+                        if len(notas_stmt) == 0 or calcular_consenso_percentual(notas_stmt, escala_max) < 80.0:
+                            todas_consensualizadas = False
+                            break
+                    if todas_consensualizadas:
+                        st.success("🌟 Todas as afirmações atingiram o limiar de consenso (≥80%) nesta ronda!")
+                        if st.button("🏁 Concluir Estudo Antecipadamente (Atingido Consenso Total)"):
+                            conn.execute("UPDATE configuracoes SET valor=? WHERE chave='max_rondas'", (str(ronda_ativa),))
+                            conn.commit()
+                            st.success("Estudo concluído antecipadamente com sucesso!")
+                            st.rerun()
+
             col_b1, col_b2 = st.columns(2)
             with col_b1:
                 pdf_global_bytes = generate_admin_report_pdf(df_all_rep, df_users_rep, df_af_rep, escala_max, df_tempos_rep)
                 st.download_button("📄 Baixar Relatório Global do Estudo (PDF)", data=pdf_global_bytes, file_name="relatorio_global_estudo_delphi.pdf", mime="application/pdf")
             with col_b2:
-                # Botão para exportar a totalidade de rondas e justificações de uma só vez em Excel/CSV
                 df_completo_export = pd.read_sql_query("""
                     SELECT r.expert_id as 'ID Perito', r.round_num as 'Ronda', r.statement_id as 'ID Afirmação', 
                            a.texto as 'Texto Afirmação', r.score as 'Nota', r.justification as 'Justificação' 
@@ -475,7 +490,6 @@ else:
                     st.dataframe(df_final, use_container_width=True)
                     st.download_button(f"Exportar Matriz Ronda {r} (Excel/CSV)", data=df_final.to_csv(index_label="Afirmação").encode('utf-8'), file_name=f'matriz_estatistica_ronda_{r}.csv', mime='text/csv')
                 
-                # Restauração dos Gráficos Estatísticos
                 st.divider()
                 st.subheader("📈 Evolução Gráfica do Estudo")
                 dados_graficos = []
@@ -579,11 +593,20 @@ else:
             st.divider()
 
             st.info(f"Ronda ativa atual: **{ronda_ativa}** (de {max_rondas})")
-            if ronda_ativa < max_rondas:
-                if st.button("🚀 Dar ordem para avançar para a Ronda Seguinte"):
-                    conn.execute("UPDATE configuracoes SET valor=? WHERE chave='ronda_ativa'", (str(ronda_ativa + 1),))
+            
+            col_cfg1, col_cfg2 = st.columns(2)
+            with col_cfg1:
+                if ronda_ativa < max_rondas:
+                    if st.button("🚀 Dar ordem para avançar para a Ronda Seguinte"):
+                        conn.execute("UPDATE configuracoes SET valor=? WHERE chave='ronda_ativa'", (str(ronda_ativa + 1),))
+                        conn.commit()
+                        st.success("Avançado com sucesso!")
+                        st.rerun()
+            with col_cfg2:
+                if st.button("🏁 Concluir Estudo Antecipadamente (Definir Ronda Atual como Final)"):
+                    conn.execute("UPDATE configuracoes SET valor=? WHERE chave='max_rondas'", (str(ronda_ativa),))
                     conn.commit()
-                    st.success("Avançado com sucesso!")
+                    st.success("Estudo concluído antecipadamente!")
                     st.rerun()
             st.divider()
 
