@@ -156,7 +156,7 @@ def generate_ai_analysis_prompt(conn, escala_max):
     return prompt
 
 def get_db_connection():
-    conn = sqlite3.connect("delphi_v19.db")
+    conn = sqlite3.connect("delphi_v20.db")
     conn.execute('CREATE TABLE IF NOT EXISTS respostas (expert_id TEXT, round_num INTEGER, statement_id INTEGER, score INTEGER, justification TEXT, PRIMARY KEY (expert_id, round_num, statement_id))')
     conn.execute('CREATE TABLE IF NOT EXISTS utilizadores (expert_id TEXT PRIMARY KEY, password TEXT, must_change INTEGER DEFAULT 1)')
     conn.execute('CREATE TABLE IF NOT EXISTS afirmacoes (id INTEGER PRIMARY KEY AUTOINCREMENT, texto TEXT)')
@@ -325,87 +325,87 @@ else:
                     st.download_button("📄 Baixar Relatório Completo", data=pdf_completo, file_name=f"relatorio_completo_{expert_id}.pdf", mime="application/pdf")
                 else:
                     st.info(f"Nesta Ronda {round_num}, responda às afirmações pendentes. Regra de justificação: **{regra_just}**.")
-                    with st.form(f"form_r{round_num}"):
-                        respostas_rn = {}
-                        for _, row in df_af.iterrows():
-                            idx = row['id']
-                            texto_af = row['texto']
+                    
+                    # SEM FORMULÁRIO (st.form) para permitir interatividade em tempo real e reações instantâneas
+                    respostas_rn = {}
+                    for _, row in df_af.iterrows():
+                        idx = row['id']
+                        texto_af = row['texto']
+                        
+                        if idx in consensualizadas:
+                            st.markdown(f"### {texto_af}")
+                            st.success("✅ Afirmação consensualizada")
+                            st.divider()
+                        else:
+                            ronda_anterior = round_num - 1
+                            df_ant = df_all_r[df_all_r['round_num'] == ronda_anterior]
                             
-                            if idx in consensualizadas:
+                            row_antigo = df_ant[(df_ant['expert_id'] == expert_id) & (df_ant['statement_id'] == idx)]
+                            voto_antigo = row_antigo['score'].values[0] if not row_antigo.empty else 1
+                            just_antiga = row_antigo['justification'].values[0] if not row_antigo.empty else ""
+                            
+                            if int(voto_antigo) == 0:
                                 st.markdown(f"### {texto_af}")
-                                st.success("✅ Afirmação consensualizada")
+                                st.warning("🚫 Não relevante para si.")
                                 st.divider()
-                            else:
-                                ronda_anterior = round_num - 1
-                                df_ant = df_all_r[df_all_r['round_num'] == ronda_anterior]
+                                respostas_rn[idx] = {"score": 0, "just": just_antiga, "obr": False}
+                                continue
+                            
+                            scores_item_ant = df_ant[(df_ant['statement_id'] == idx) & (df_ant['score'] > 0)]['score'].dropna()
+                            media_grupo = scores_item_ant.mean() if not scores_item_ant.empty else 0.0
+                            outros_votos = df_ant[(df_ant['statement_id'] == idx) & (df_ant['expert_id'] != expert_id) & (df_ant['score'] > 0)]['score'].tolist()
+                            outros_str = ", ".join(map(str, outros_votos)) if outros_votos else "Sem registos"
+                            
+                            st.markdown(f"### {texto_af}")
+                            st.markdown(f"👤 **O seu voto anterior:** `{voto_antigo}` | 👥 **Média do grupo:** `{media_grupo:.2f}`")
+                            st.markdown(f"👥 **Respostas dos restantes peritos:** `{outros_str}`")
+                            
+                            is_voto_neutro = (int(voto_antigo) == ponto_neutro)
+                            
+                            if is_voto_neutro:
+                                quer_manter = st.radio(
+                                    f"Classificou esta afirmação como não relevante. Quer manter a sua resposta anterior? (ID:{idx})", 
+                                    ["Sim", "Não"], 
+                                    key=f"qm_{idx}", 
+                                    horizontal=True, 
+                                    index=None
+                                )
                                 
-                                row_antigo = df_ant[(df_ant['expert_id'] == expert_id) & (df_ant['statement_id'] == idx)]
-                                voto_antigo = row_antigo['score'].values[0] if not row_antigo.empty else 1
-                                just_antiga = row_antigo['justification'].values[0] if not row_antigo.empty else ""
-                                
-                                if int(voto_antigo) == 0:
-                                    st.markdown(f"### {texto_af}")
-                                    st.warning("🚫 Não relevante para si.")
-                                    st.divider()
+                                if quer_manter is None:
+                                    st.warning("⚠️ Escolha 'Sim' ou 'Não' na pergunta acima para poder avançar.")
+                                    respostas_rn[idx] = {"score": None, "just": "", "obr": False}
+                                elif quer_manter == "Sim":
+                                    st.info("🚫 Não relevante para si.")
                                     respostas_rn[idx] = {"score": 0, "just": just_antiga, "obr": False}
-                                    continue
-                                
-                                scores_item_ant = df_ant[(df_ant['statement_id'] == idx) & (df_ant['score'] > 0)]['score'].dropna()
-                                media_grupo = scores_item_ant.mean() if not scores_item_ant.empty else 0.0
-                                outros_votos = df_ant[(df_ant['statement_id'] == idx) & (df_ant['expert_id'] != expert_id) & (df_ant['score'] > 0)]['score'].tolist()
-                                outros_str = ", ".join(map(str, outros_votos)) if outros_votos else "Sem registos"
-                                
-                                st.markdown(f"### {texto_af}")
-                                st.markdown(f"👤 **O seu voto anterior:** `{voto_antigo}` | 👥 **Média do grupo:** `{media_grupo:.2f}`")
-                                st.markdown(f"👥 **Respostas dos restantes peritos:** `{outros_str}`")
-                                
-                                is_voto_neutro = (int(voto_antigo) == ponto_neutro)
-                                
-                                if is_voto_neutro:
-                                    quer_manter = st.radio(
-                                        f"Classificou esta afirmação como não relevante. Quer manter a sua resposta anterior? (ID:{idx})", 
-                                        ["Sim", "Não"], 
-                                        key=f"qm_{idx}", 
-                                        horizontal=True, 
-                                        index=None
-                                    )
-                                    
-                                    if quer_manter is None:
-                                        st.warning("⚠️ Escolha 'Sim' ou 'Não' na pergunta acima para poder avançar.")
-                                        respostas_rn[idx] = {"score": None, "just": "", "obr": False}
-                                    elif quer_manter == "Sim":
-                                        st.info("🚫 Não relevante para si.")
-                                        respostas_rn[idx] = {"score": 0, "just": just_antiga, "obr": False}
-                                    else: # Se selecionar "Não", abre a escala para escolher um novo valor
-                                        index_voto = int(voto_antigo) - 1 if (voto_antigo > 0 and int(voto_antigo) in escala_lista) else (ponto_neutro - 1)
-                                        s = st.radio(f"Novo voto (ID:{idx})", escala_lista, key=f"sr_{idx}", horizontal=True, index=index_voto)
-                                        j = st.text_area(f"Nova justificação (ID:{idx})", value=just_antiga, key=f"jr_{idx}")
-                                        obr = verificar_obrigatoriedade(s, escala_max, regra_just)
-                                        respostas_rn[idx] = {"score": s, "just": j, "obr": obr}
-                                else:
-                                    # Se não votou no ponto neutro anteriormente, exibe diretamente a escala para reavaliação
+                                else: # Se selecionar "Não", abre a escala instantaneamente em tempo real
                                     index_voto = int(voto_antigo) - 1 if (voto_antigo > 0 and int(voto_antigo) in escala_lista) else (ponto_neutro - 1)
                                     s = st.radio(f"Novo voto (ID:{idx})", escala_lista, key=f"sr_{idx}", horizontal=True, index=index_voto)
                                     j = st.text_area(f"Nova justificação (ID:{idx})", value=just_antiga, key=f"jr_{idx}")
                                     obr = verificar_obrigatoriedade(s, escala_max, regra_just)
                                     respostas_rn[idx] = {"score": s, "just": j, "obr": obr}
-                                st.divider()
-                                
-                        if st.form_submit_button(f"Submeter Ronda {round_num}"):
-                            if any(d['score'] is None for d in respostas_rn.values()):
-                                st.error("Atenção: Tem de escolher 'Sim' ou 'Não' nas afirmações assinaladas a amarelo.")
-                            elif any(d['obr'] and not d['just'].strip() for d in respostas_rn.values()):
-                                st.error("Atenção: Existem respostas que exigem justificação obrigatória.")
                             else:
-                                end_dt = datetime.datetime.now()
-                                duration = int((end_dt - start_dt).total_seconds())
-                                conn.execute("UPDATE tempos_ronda SET duration_seconds = ? WHERE expert_id = ? AND round_num = ?", (duration, expert_id, round_num))
-                                for idx, d in respostas_rn.items():
-                                    conn.execute('INSERT OR REPLACE INTO respostas VALUES (?, ?, ?, ?, ?)', (expert_id, round_num, idx, d['score'], d['just']))
-                                conn.commit()
-                                st.session_state.submitted_round = round_num
-                                st.session_state.submetido_sucesso = True
-                                st.rerun()
+                                index_voto = int(voto_antigo) - 1 if (voto_antigo > 0 and int(voto_antigo) in escala_lista) else (ponto_neutro - 1)
+                                s = st.radio(f"Novo voto (ID:{idx})", escala_lista, key=f"sr_{idx}", horizontal=True, index=index_voto)
+                                j = st.text_area(f"Nova justificação (ID:{idx})", value=just_antiga, key=f"jr_{idx}")
+                                obr = verificar_obrigatoriedade(s, escala_max, regra_just)
+                                respostas_rn[idx] = {"score": s, "just": j, "obr": obr}
+                            st.divider()
+                            
+                    if st.button(f"Submeter Ronda {round_num}"):
+                        if any(d['score'] is None for d in respostas_rn.values()):
+                            st.error("Atenção: Tem de escolher 'Sim' ou 'Não' nas afirmações assinaladas a amarelo.")
+                        elif any(d['obr'] and not d['just'].strip() for d in respostas_rn.values()):
+                            st.error("Atenção: Existem respostas que exigem justificação obrigatória.")
+                        else:
+                            end_dt = datetime.datetime.now()
+                            duration = int((end_dt - start_dt).total_seconds())
+                            conn.execute("UPDATE tempos_ronda SET duration_seconds = ? WHERE expert_id = ? AND round_num = ?", (duration, expert_id, round_num))
+                            for idx, d in respostas_rn.items():
+                                conn.execute('INSERT OR REPLACE INTO respostas VALUES (?, ?, ?, ?, ?)', (expert_id, round_num, idx, d['score'], d['just']))
+                            conn.commit()
+                            st.session_state.submitted_round = round_num
+                            st.session_state.submetido_sucesso = True
+                            st.rerun()
         conn.close()
     else:
         st.title("Painel de Investigador")
