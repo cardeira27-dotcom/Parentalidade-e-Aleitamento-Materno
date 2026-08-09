@@ -36,7 +36,18 @@ def verify_password(stored_password, provided_password, conn=None, user_id=None)
 def safe_txt(txt):
     return str(txt).encode('latin-1', 'replace').decode('latin-1')
 
-# Novo gerador de PDF unificado para o perito (gera uma ronda específica ou o histórico de todas)
+# Função Inteligente de Cálculo de Consenso Delphi (Aceitação ou Rejeição)
+def calcular_consenso_percentual(notas, escala_max):
+    if len(notas) == 0:
+        return 0.0
+    # Consenso de Aceitação (ex: 4 e 5 numa escala de 5)
+    cons_acc = (notas >= escala_max - 1).mean()
+    # Consenso de Rejeição/Exclusão (ex: 1 e 2 numa escala de 5)
+    cons_rej = (notas <= 2).mean()
+    
+    # O consenso será o valor mais alto entre concordar em aceitar ou concordar em rejeitar
+    return max(cons_acc, cons_rej) * 100
+
 def generate_expert_report_pdf(expert_id, conn, specific_round=None):
     pdf = FPDF()
     pdf.add_page()
@@ -105,13 +116,12 @@ def generate_admin_report_pdf(df_respostas, df_users, df_afirmacoes, escala_max,
             
             df_r = df_respostas[df_respostas['round_num'] == r]
             pivot = df_r.pivot(index='statement_id', columns='expert_id', values='score')
-            limiar_consenso = escala_max - 1
             
             for idx, row in pivot.iterrows():
                 notas = row.dropna()
                 if len(notas) > 0:
                     media = notas.mean()
-                    cons = (notas >= limiar_consenso).mean() * 100
+                    cons = calcular_consenso_percentual(notas, escala_max)
                     pdf.multi_cell(0, 6, txt=safe_txt(f"Afirmacao ID {idx}: Media = {media:.2f} | Indice Consenso = {cons:.1f}%"))
             
             if not df_tempos.empty:
@@ -140,7 +150,7 @@ def generate_ai_analysis_prompt(conn, escala_max):
     prompt += f"- Total de Peritos Participantes: {len(df_users)}\n"
     prompt += f"- Total de Afirmações Avaliadas: {len(df_af)}\n"
     prompt += f"- Escala de Likert utilizada: 1 a {escala_max}\n"
-    prompt += "- Limiar de Consenso definido: >= 80% das respostas nos valores mais altos da escala.\n\n"
+    prompt += "- Limiar de Consenso definido: >= 80% das respostas nos valores mais altos ou mais baixos da escala.\n\n"
     
     prompt += "--- TEMPOS MÉDIOS DE RESPOSTA ---\n"
     if not df_tempos.empty:
@@ -162,8 +172,7 @@ def generate_ai_analysis_prompt(conn, escala_max):
                 scores = df_item['score'].dropna()
                 media = scores.mean() if len(scores) > 0 else 0
                 std = scores.std() if len(scores) > 1 else 0
-                limiar = escala_max - 1
-                consenso = (scores >= limiar).mean() * 100 if len(scores) > 0 else 0
+                consenso = calcular_consenso_percentual(scores, escala_max)
                 
                 prompt += f"- Afirmação {stmt_id}: \"{texto_af}\"\n"
                 prompt += f"  * Média: {media:.2f} | Desvio Padrão: {std:.2f} | Consenso: {consenso:.1f}%\n"
@@ -183,7 +192,7 @@ def generate_ai_analysis_prompt(conn, escala_max):
     return prompt
 
 def get_db_connection():
-    conn = sqlite3.connect("delphi_v6.db")
+    conn = sqlite3.connect("delphi_v7.db")
     conn.execute('CREATE TABLE IF NOT EXISTS respostas (expert_id TEXT, round_num INTEGER, statement_id INTEGER, score INTEGER, justification TEXT, PRIMARY KEY (expert_id, round_num, statement_id))')
     conn.execute('CREATE TABLE IF NOT EXISTS utilizadores (expert_id TEXT PRIMARY KEY, password TEXT, must_change INTEGER DEFAULT 1)')
     conn.execute('CREATE TABLE IF NOT EXISTS afirmacoes (id INTEGER PRIMARY KEY AUTOINCREMENT, texto TEXT)')
@@ -333,7 +342,12 @@ else:
             round_num += 1
             
         if round_num > max_rondas:
-            st.success("🎉 Já concluiu todas as rondas previstas para este estudo. Muito obrigado!")
+            st.markdown("## 🎉 Muito obrigado pela sua participação.")
+            st.info("Concluiu todas as rondas previstas para este estudo.")
+            
+            if st.session_state.submetido_sucesso:
+                st.success(f"A sua última ronda (Ronda {st.session_state.submitted_round}) foi submetida e guardada com sucesso!")
+                
             pdf_final = generate_expert_report_pdf(expert_id, conn)
             st.download_button("📄 Baixar Relatório Final (Todas as Rondas)", data=pdf_final, file_name=f"relatorio_final_{expert_id}.pdf", mime="application/pdf")
             
@@ -400,15 +414,14 @@ else:
                     # Lógica de processamento de consensos prévios (Rondas > 1)
                     consensualizadas = []
                     divergencias = []
-                    limiar_consenso = escala_max - 1
                     
                     for idx in df_af['id'].tolist():
                         alcancou_consenso = False
-                        # Verifica se atingiu >= 80% em ALGUMA ronda anterior
+                        # Verifica se atingiu >= 80% em ALGUMA ronda anterior (seja por aceitação ou rejeição)
                         for prev_r in range(1, round_num):
                             scores_prev = df_all[(df_all['round_num'] == prev_r) & (df_all['statement_id'] == idx)]['score'].dropna()
                             if not scores_prev.empty:
-                                if (scores_prev >= limiar_consenso).mean() >= 0.8:
+                                if calcular_consenso_percentual(scores_prev, escala_max) >= 80.0:
                                     alcancou_consenso = True
                                     break
                         
@@ -431,7 +444,7 @@ else:
                                 
                                 if idx in consensualizadas:
                                     st.markdown(f"### {texto_af}")
-                                    st.success("✅ **Afirmação consensualizada**")
+                                    st.success("✅ Afirmação consensualizada")
                                     st.divider()
                                 else:
                                     ronda_anterior = round_num - 1
@@ -528,8 +541,8 @@ else:
                     stats = pd.DataFrame(index=pivot.index)
                     stats['Média'] = pivot.mean(axis=1).round(2)
                     stats['Desv. Padrão'] = pivot.std(axis=1).round(2)
-                    limiar_consenso = escala_max - 1
-                    stats['Índice Consenso (%)'] = pivot.apply(lambda row: (row.dropna() >= limiar_consenso).mean() * 100 if len(row.dropna())>0 else 0, axis=1).round(1)
+                    
+                    stats['Índice Consenso (%)'] = pivot.apply(lambda row: calcular_consenso_percentual(row.dropna(), escala_max), axis=1).round(1)
                     pivot.columns = [f"Perito {col}" for col in pivot.columns]
                     df_final = pd.concat([pivot, stats], axis=1)
                     df_final.index = [f"Afirmação {i}" for i in df_final.index]
@@ -547,7 +560,7 @@ else:
                         notas = df_r[df_r['statement_id'] == stmt]['score'].dropna()
                         if len(notas) > 0:
                             media = notas.mean()
-                            cons = (notas >= limiar_consenso).mean() * 100
+                            cons = calcular_consenso_percentual(notas, escala_max)
                             dados_graficos.append({"Ronda": f"Ronda {r}", "Afirmação": f"Afirmação {stmt}", "Média": media, "Consenso (%)": cons})
                 
                 df_graf = pd.DataFrame(dados_graficos)
