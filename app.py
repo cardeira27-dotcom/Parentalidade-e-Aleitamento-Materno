@@ -32,20 +32,14 @@ def verify_password(stored_password, provided_password, conn=None, user_id=None)
     verify_hash = hashlib.pbkdf2_hmac('sha256', provided_password.encode('utf-8'), salt.encode('utf-8'), 100000).hex()
     return verify_hash == pwd_hash
 
-# Helper para evitar que emojis inseridos nas justificações quebrem o gerador de PDF
 def safe_txt(txt):
     return str(txt).encode('latin-1', 'replace').decode('latin-1')
 
-# Função Inteligente de Cálculo de Consenso Delphi (Aceitação ou Rejeição)
 def calcular_consenso_percentual(notas, escala_max):
     if len(notas) == 0:
         return 0.0
-    # Consenso de Aceitação (ex: 4 e 5 numa escala de 5)
     cons_acc = (notas >= escala_max - 1).mean()
-    # Consenso de Rejeição/Exclusão (ex: 1 e 2 numa escala de 5)
     cons_rej = (notas <= 2).mean()
-    
-    # O consenso será o valor mais alto entre concordar em aceitar ou concordar em rejeitar
     return max(cons_acc, cons_rej) * 100
 
 def generate_expert_report_pdf(expert_id, conn, specific_round=None):
@@ -192,7 +186,7 @@ def generate_ai_analysis_prompt(conn, escala_max):
     return prompt
 
 def get_db_connection():
-    conn = sqlite3.connect("delphi_v7.db")
+    conn = sqlite3.connect("delphi_v8.db")
     conn.execute('CREATE TABLE IF NOT EXISTS respostas (expert_id TEXT, round_num INTEGER, statement_id INTEGER, score INTEGER, justification TEXT, PRIMARY KEY (expert_id, round_num, statement_id))')
     conn.execute('CREATE TABLE IF NOT EXISTS utilizadores (expert_id TEXT PRIMARY KEY, password TEXT, must_change INTEGER DEFAULT 1)')
     conn.execute('CREATE TABLE IF NOT EXISTS afirmacoes (id INTEGER PRIMARY KEY AUTOINCREMENT, texto TEXT)')
@@ -212,6 +206,12 @@ def get_db_connection():
     c.execute("SELECT COUNT(*) FROM configuracoes WHERE chave='ronda_ativa'")
     if c.fetchone()[0] == 0: c.execute("INSERT INTO configuracoes VALUES ('ronda_ativa', '1')")
     conn.commit()
+
+    # Garantir que a escala configurada é sempre ímpar (se por acaso estava par, ajusta para 5)
+    escala_atual = int(conn.execute("SELECT valor FROM configuracoes WHERE chave='escala_max'").fetchone()[0])
+    if escala_atual not in [3, 5, 7, 9]:
+        conn.execute("UPDATE configuracoes SET valor='5' WHERE chave='escala_max'")
+        conn.commit()
 
     c.execute("SELECT COUNT(*) FROM utilizadores")
     if c.fetchone()[0] == 0:
@@ -327,6 +327,7 @@ else:
         df_all = pd.read_sql_query("SELECT * FROM respostas", conn)
         df_af = pd.read_sql_query("SELECT * FROM afirmacoes ORDER BY id", conn)
         escala_max = int(conn.execute("SELECT valor FROM configuracoes WHERE chave='escala_max'").fetchone()[0])
+        ponto_neutro = (escala_max + 1) // 2
         max_rondas = int(conn.execute("SELECT valor FROM configuracoes WHERE chave='max_rondas'").fetchone()[0])
         ronda_ativa = int(conn.execute("SELECT valor FROM configuracoes WHERE chave='ronda_ativa'").fetchone()[0])
         regra_just = conn.execute("SELECT valor FROM configuracoes WHERE chave='regra_justificacao'").fetchone()[0]
@@ -334,7 +335,6 @@ else:
         
         rondas_feitas = df_all[df_all['expert_id'] == expert_id]['round_num'].unique()
         
-        # Determinar qual ronda o perito deve responder
         round_num = 1
         while round_num <= max_rondas:
             if round_num not in rondas_feitas:
@@ -364,7 +364,6 @@ else:
                 pdf_submissao = generate_expert_report_pdf(expert_id, conn, specific_round=r_msg)
                 st.download_button(f"Baixar comprovativo em PDF", data=pdf_submissao, file_name=f"ronda_{r_msg}_{expert_id}.pdf", mime="application/pdf")
             else:
-                # Gestão do tempo do perito
                 cursor = conn.cursor()
                 cursor.execute("SELECT start_time FROM tempos_ronda WHERE expert_id=? AND round_num=?", (expert_id, round_num))
                 row_tempo = cursor.fetchone()
@@ -382,7 +381,7 @@ else:
                 st.divider()
 
                 if round_num == 1:
-                    st.info(f"Classifique de 1 a {escala_max}. Regra de justificação: **{regra_just}**.")
+                    st.info(f"Classifique de 1 a {escala_max} (ponto neutro: {ponto_neutro}). Regra de justificação: **{regra_just}**.")
                     with st.form("form_r1"):
                         respostas = {}
                         for _, row in df_af.iterrows():
@@ -411,13 +410,11 @@ else:
                                 st.rerun()
                 
                 else: 
-                    # Lógica de processamento de consensos prévios (Rondas > 1)
                     consensualizadas = []
                     divergencias = []
                     
                     for idx in df_af['id'].tolist():
                         alcancou_consenso = False
-                        # Verifica se atingiu >= 80% em ALGUMA ronda anterior (seja por aceitação ou rejeição)
                         for prev_r in range(1, round_num):
                             scores_prev = df_all[(df_all['round_num'] == prev_r) & (df_all['statement_id'] == idx)]['score'].dropna()
                             if not scores_prev.empty:
@@ -452,19 +449,42 @@ else:
                                     
                                     row_antigo = df_ant[(df_ant['expert_id'] == expert_id) & (df_ant['statement_id'] == idx)]
                                     voto_antigo = row_antigo['score'].values[0] if not row_antigo.empty else 1
+                                    just_antiga = row_antigo['justification'].values[0] if not row_antigo.empty else ""
+                                    
+                                    scores_item_ant = df_ant[df_ant['statement_id'] == idx]['score'].dropna()
+                                    media_grupo = scores_item_ant.mean() if not scores_item_ant.empty else 0.0
+                                    
                                     outros_votos = df_ant[(df_ant['statement_id'] == idx) & (df_ant['expert_id'] != expert_id)]['score'].tolist()
                                     outros_str = ", ".join(map(str, outros_votos)) if outros_votos else "Sem registos"
                                     
                                     st.markdown(f"### {texto_af}")
-                                    st.markdown(f"👤 **O seu voto anterior:** `{voto_antigo}`")
-                                    st.markdown(f"👥 **Os outros responderam:** `{outros_str}`")
+                                    st.markdown(f"👤 **O seu voto anterior:** `{voto_antigo}` | 👥 **Média do grupo:** `{media_grupo:.2f}`")
+                                    st.markdown(f"👥 **Respostas dos restantes peritos:** `{outros_str}`")
                                     
-                                    index_voto = int(voto_antigo) - 1 if int(voto_antigo) in escala_lista else 0
-                                    s = st.radio(f"Novo voto (ID:{idx})", escala_lista, key=f"sr_{idx}", horizontal=True, index=index_voto)
-                                    j = st.text_area(f"Nova justificação (ID:{idx})", key=f"jr_{idx}")
+                                    # Verificar se a média do grupo está no ponto neutro (ex: 3 numa escala de 5, 4 numa escala de 7)
+                                    is_media_neutra = (round(media_grupo) == ponto_neutro)
                                     
-                                    obr = verificar_obrigatoriedade(s, escala_max, regra_just)
-                                    respostas_rn[idx] = {"score": s, "just": j, "obr": obr}
+                                    quer_manter = "Sim"
+                                    if is_media_neutra:
+                                        quer_manter = st.radio(
+                                            f"O conjunto de peritos classificou esta afirmação com não relevante. Quer manter a sua resposta? (ID:{idx})",
+                                            ["Sim", "Não"],
+                                            key=f"qm_{idx}",
+                                            horizontal=True
+                                        )
+                                    
+                                    if quer_manter == "Sim":
+                                        index_voto = int(voto_antigo) - 1 if int(voto_antigo) in escala_lista else 0
+                                        s = st.radio(f"Novo voto (ID:{idx})", escala_lista, key=f"sr_{idx}", horizontal=True, index=index_voto)
+                                        j = st.text_area(f"Nova justificação (ID:{idx})", value=just_antiga, key=f"jr_{idx}")
+                                        
+                                        obr = verificar_obrigatoriedade(s, escala_max, regra_just)
+                                        respostas_rn[idx] = {"score": s, "just": j, "obr": obr}
+                                    else:
+                                        # Se escolheu "Não", mantém a resposta anterior sem mostrar a escala
+                                        st.info("🔒 Resposta anterior mantida (escala oculta por opção de não relevância).")
+                                        respostas_rn[idx] = {"score": int(voto_antigo), "just": just_antiga, "obr": False}
+                                        
                                     st.divider()
                                 
                             if st.form_submit_button(f"Submeter Ronda {round_num}"):
@@ -489,6 +509,7 @@ else:
         tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 Módulo Estatístico", "📊 Respostas Brutas", "👥 Utilizadores", "📝 Afirmações", "⚙️ Configurações"])
         conn = get_db_connection()
         escala_max = int(conn.execute("SELECT valor FROM configuracoes WHERE chave='escala_max'").fetchone()[0])
+        ponto_neutro = (escala_max + 1) // 2
         max_rondas = int(conn.execute("SELECT valor FROM configuracoes WHERE chave='max_rondas'").fetchone()[0])
         ronda_ativa = int(conn.execute("SELECT valor FROM configuracoes WHERE chave='ronda_ativa'").fetchone()[0])
         regra_just = conn.execute("SELECT valor FROM configuracoes WHERE chave='regra_justificacao'").fetchone()[0]
@@ -512,7 +533,6 @@ else:
                 )
             st.divider()
 
-            # Secção com os tempos médios por ronda
             st.subheader("⏱️ Tempos Médios de Resposta por Ronda")
             if not df_tempos_rep.empty:
                 t_resumo = df_tempos_rep.groupby('round_num')['duration_seconds'].mean().reset_index()
@@ -632,7 +652,6 @@ else:
         with tab5:
             st.subheader("Configurações e Controlo de Rondas")
             
-            # --- CONTROLO DA RONDA ATIVA ---
             st.markdown("### Controlo do Fluxo de Rondas")
             st.info(f"O estudo encontra-se atualmente a decorrer na **Ronda {ronda_ativa}** (de um total de {max_rondas} rondas configuradas).")
             if ronda_ativa < max_rondas:
@@ -648,10 +667,15 @@ else:
             c1, c2, c3 = st.columns(3)
             with c1:
                 with st.form("form_escala"):
-                    st.markdown("**Escala Máxima**")
-                    nova_escala = st.number_input("Valor máximo", min_value=3, max_value=10, value=escala_max)
+                    st.markdown("**Escala Máxima (Apenas Ímpares)**")
+                    escalas_impares = [3, 5, 7, 9]
+                    idx_escala = escalas_impares.index(escala_max) if escala_max in escalas_impares else 1
+                    nova_escala = st.selectbox("Valor máximo", escalas_impares, index=idx_escala)
                     if st.form_submit_button("Atualizar Escala"):
-                        conn.execute("UPDATE configuracoes SET valor=? WHERE chave='escala_max'", (str(nova_escala),)); conn.commit(); st.success("Atualizada!"); st.rerun()
+                        conn.execute("UPDATE configuracoes SET valor=? WHERE chave='escala_max'", (str(nova_escala),))
+                        conn.commit()
+                        st.success("Escala atualizada com sucesso!")
+                        st.rerun()
             with c2:
                 with st.form("form_rondas"):
                     st.markdown("Total de Rondas")
